@@ -15,12 +15,14 @@ dependencies = [
     "sqlalchemy[asyncio]==2.0.35",
     "asyncpg==0.29.0",
     "alembic==1.13.2",
-    "pydantic==2.9.2",
+    "pydantic[email]==2.9.2",
     "pydantic-settings==2.5.2",
     "celery[redis]==5.4.0",
     "redis==5.0.8",
     "structlog==24.4.0",
     "python-multipart==0.0.9",
+    "argon2-cffi==23.1.0",
+    "pyjwt==2.9.0",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +44,7 @@ packages = ["app"]
 line-length = 100
 target-version = "py312"
 src = ["app", "tests"]
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "N"]

@@ -14,8 +14,10 @@ import once models start referencing each other.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from functools import lru_cache
 
+from sqlalchemy import DateTime
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -28,7 +30,19 @@ from app.core.config import Settings, get_settings
 
 
 class Base(DeclarativeBase):
-    """Declarative base shared by every ORM model in the application."""
+    """
+    Declarative base shared by every ORM model in the application.
+
+    `type_annotation_map` makes every bare `Mapped[datetime]` column
+    map to a timezone-aware `TIMESTAMPTZ` by default, matching SRS §5.2
+    (every DDL example uses `TIMESTAMPTZ`) and matching the domain
+    layer, which always produces `datetime.now(timezone.utc)` — never
+    naive datetimes. Without this, SQLAlchemy's default is a naive
+    `TIMESTAMP`, which raises at the driver level the moment a
+    timezone-aware Python datetime is bound to it.
+    """
+
+    type_annotation_map = {datetime: DateTime(timezone=True)}
 
 
 @lru_cache(maxsize=1)
@@ -64,14 +78,22 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI dependency yielding a request-scoped async session.
 
-    Usage: ``session: AsyncSession = Depends(get_db_session)``. The
-    session is closed automatically at the end of the request; callers
-    are responsible for committing (use-case services own transaction
-    boundaries per SRS §10.1 — this dependency does not auto-commit).
+    Implements a request-scoped unit-of-work: commits automatically if
+    the request handler completes without raising, and rolls back if it
+    does. Repositories call `flush()` (to populate generated ids/
+    defaults for use later in the same request) but never `commit()`
+    themselves — `domain`/`application` stay storage-transaction-agnostic,
+    and the transaction boundary lives at the one place that actually
+    knows whether the whole request succeeded: this dependency.
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def check_database_connectivity() -> bool:

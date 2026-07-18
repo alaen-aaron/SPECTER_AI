@@ -1,4 +1,4 @@
-.PHONY: help up down logs restart build ps \
+.PHONY: help up down logs restart build ps verify \
         lint format test test-backend lint-backend format-backend \
         lint-frontend format-frontend \
         shell-api shell-db migrate makemigration
@@ -11,6 +11,7 @@ help:
 	@echo "  make logs            Tail logs from every service"
 	@echo "  make restart         Restart all services"
 	@echo "  make ps              Show running service status"
+	@echo "  make verify          Run the full environment/stack verification toolkit"
 	@echo ""
 	@echo "  make lint            Lint backend + frontend"
 	@echo "  make format          Format backend + frontend"
@@ -40,6 +41,9 @@ build:
 
 ps:
 	$(COMPOSE) ps
+
+verify:
+	@bash scripts/verify.sh
 
 # --- Backend -----------------------------------------------------------
 lint-backend:

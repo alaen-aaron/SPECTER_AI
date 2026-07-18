@@ -11,11 +11,20 @@ for the full, frozen Software Requirements Specification.
 
 ## Status
 
-**Milestone 1 — Project Bootstrap.** This is the repository skeleton only:
-FastAPI app factory, async SQLAlchemy engine wiring, Celery app wiring,
-structured logging, configuration system, a health endpoint, and a minimal
-React shell that calls it. No auth, RBAC, database models, plugins, or AI
-logic exist yet — those land in later milestones per the frozen SRS.
+**Milestone 2 — Identity & Platform Foundation**, built on top of the frozen
+Milestone 1 bootstrap. Implemented: JWT authentication with rotating
+refresh tokens (Argon2id password hashing), RBAC (organization + project
+scoped roles, enforced server-side), Organizations, Projects (with the
+FR-2.3 authorization gate on the Active transition), Targets, Authorization
+Records, and a fully-implemented Scope Guard service (SRS §16.3) exposed
+through a preview `scope-check` endpoint ahead of Phase 2's real scan-launch
+route. Plugins, scanning, the AI Engine, the Knowledge Graph, the Workflow
+Engine, and Reporting are not implemented yet — those are Phase 2+ per the
+frozen SRS.
+
+Run `make verify` (or `scripts/verify.sh` / `scripts/verify.ps1` on Windows)
+for a full environment/stack health report — Docker, Postgres, Redis,
+MinIO, the API, Celery worker/beat, Alembic, and required tool versions.
 
 ## Stack
 
@@ -34,7 +43,11 @@ make up
 ```
 
 This builds and starts: `postgres`, `redis`, `minio`, `api`, `worker`, `beat`,
-and `frontend`.
+and `frontend`. Once Postgres is healthy, apply the database schema:
+
+```bash
+make migrate
+```
 
 Once running:
 

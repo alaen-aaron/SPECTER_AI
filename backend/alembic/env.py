@@ -1,11 +1,11 @@
 """
 Alembic environment script, wired for SQLAlchemy 2.0's async engine.
 
-No models are imported into `target_metadata` yet — that begins in
-Milestone 2 once `infrastructure/db/models/` exists per SRS §5. This
-file's only job in Milestone 1 is to prove `alembic` can connect using
-the same `Settings`/`Base` the application itself uses, so Milestone 2
-can add `alembic revision --autogenerate` without touching this wiring.
+Imports `infrastructure/db/models` for its side effect of registering
+every ORM model onto `Base.metadata`, so `alembic revision
+--autogenerate` can see the full Milestone 2 schema (users,
+organizations, projects, targets, authorization_records, sessions,
+audit_logs, and their membership/invitation tables).
 """
 
 from __future__ import annotations
@@ -17,6 +17,9 @@ from alembic import context
 from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
+# Side-effect import: registers every ORM model onto Base.metadata.
+# Required before `--autogenerate` can see the full schema.
+import app.infrastructure.db.models  # noqa: F401,E402
 from app.core.config import get_settings
 from app.infrastructure.db.session import Base
 
@@ -25,8 +28,6 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# No ORM models exist yet (Milestone 1) — this becomes populated as
-# soon as `infrastructure/db/models/` is introduced in Milestone 2.
 target_metadata = Base.metadata
 
 

@@ -1,16 +1,20 @@
 """
 Aggregates all v1 API routers into one.
 
-Milestone 1 registers only `health`. As Milestone 2+ add auth, projects,
-targets, etc., each gets its own module under `api/v1/` and is included
-here — this file should never contain route logic itself, only wiring.
+Each resource gets its own module under `api/v1/routers/`; this file
+only wires them together — it must never contain route logic itself.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import health
+from app.api.v1.routers import auth, authorization, health, organizations, projects, targets
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(health.router)
+api_v1_router.include_router(auth.router)
+api_v1_router.include_router(organizations.router)
+api_v1_router.include_router(projects.router)
+api_v1_router.include_router(targets.router)
+api_v1_router.include_router(authorization.router)
