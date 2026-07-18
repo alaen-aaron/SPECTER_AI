@@ -17,6 +17,7 @@ COPY pyproject.toml README.md ./
 COPY app ./app
 COPY alembic.ini ./
 COPY alembic ./alembic
+COPY tests ./tests
 
 # Install the project itself plus dev extras (dev extras are harmless in
 # the runtime image for this stage; a slimmer prod-only stage is a
