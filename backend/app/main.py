@@ -28,6 +28,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings)
     logger.info("app_startup", app_name=settings.APP_NAME, environment=settings.APP_ENV.value)
+
+    import app.plugins.builtin as plugins_builtin  # noqa: F401 - side-effect import
+    import app.plugins.normalizers  # noqa: F401 - side-effect import
+    from app.plugins.normalizer_registry import normalizer_registry
+    from app.plugins.registry import registry as plugin_registry
+
+    _ = plugins_builtin  # imported for its registration side effect only
+    logger.info("plugins_registered", plugins=[p.name() for p in plugin_registry.list()])
+    logger.info(
+        "normalizers_registered",
+        plugins=[n.plugin_name for n in normalizer_registry.list()],
+    )
+
     yield
     logger.info("app_shutdown")
 

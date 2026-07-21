@@ -21,18 +21,29 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.domain.entities import (
+    Asset,
     AuditLogEntry,
     AuthorizationRecord,
+    Finding,
     Organization,
     OrganizationInvitation,
     OrganizationMember,
     Project,
     ProjectMember,
+    Scan,
     Session,
     Target,
+    ToolResult,
     User,
 )
-from app.domain.value_objects import OrganizationRole, ProjectRole
+from app.domain.value_objects import (
+    AssetType,
+    FindingStatus,
+    OrganizationRole,
+    ProjectRole,
+    ScanStatus,
+    Severity,
+)
 
 
 class FakeUserRepository:
@@ -234,3 +245,169 @@ class FakeAuditLogRepository:
 
     async def list_for_organization(self, organization_id: UUID) -> list[AuditLogEntry]:
         return [e for e in self._entries if e.organization_id == organization_id]
+
+
+class FakeScanRepository:
+    def __init__(self) -> None:
+        self._scans: dict[UUID, Scan] = {}
+
+    async def create(self, scan: Scan) -> None:
+        self._scans[scan.id] = scan
+
+    async def get(self, scan_id: UUID) -> Scan | None:
+        return self._scans.get(scan_id)
+
+    async def list(
+        self, project_id: UUID, limit: int = 20, cursor: datetime | None = None
+    ) -> list[Scan]:
+        results = sorted(
+            (s for s in self._scans.values() if s.project_id == project_id),
+            key=lambda s: s.created_at,
+            reverse=True,
+        )
+        if cursor is not None:
+            results = [s for s in results if s.created_at < cursor]
+        return results[: limit + 1]
+
+    async def update_status(self, scan_id: UUID, status: ScanStatus) -> None:
+        scan = self._scans.get(scan_id)
+        if scan is not None:
+            scan.status = status
+            if status is ScanStatus.RUNNING:
+                scan.started_at = datetime.now(UTC)
+
+    async def append_log(self, scan_id: UUID, logs_path: str) -> None:
+        scan = self._scans.get(scan_id)
+        if scan is not None:
+            scan.logs_path = logs_path
+
+    async def complete(self, scan_id: UUID, exit_code: int, artifacts_path: str | None) -> None:
+        scan = self._scans.get(scan_id)
+        if scan is not None:
+            scan.status = ScanStatus.COMPLETED
+            scan.exit_code = exit_code
+            scan.artifacts_path = artifacts_path
+            scan.completed_at = datetime.now(UTC)
+
+    async def fail(self, scan_id: UUID, error_message: str, exit_code: int | None) -> None:
+        scan = self._scans.get(scan_id)
+        if scan is not None:
+            scan.status = ScanStatus.FAILED
+            scan.error_message = error_message
+            scan.exit_code = exit_code
+            scan.completed_at = datetime.now(UTC)
+
+
+class FakeToolResultRepository:
+    def __init__(self) -> None:
+        self._results: dict[UUID, ToolResult] = {}
+
+    async def add(self, tool_result: ToolResult) -> None:
+        self._results[tool_result.id] = tool_result
+
+    async def get(self, tool_result_id: UUID) -> ToolResult | None:
+        return self._results.get(tool_result_id)
+
+    async def list_for_scan(self, scan_id: UUID) -> list[ToolResult]:
+        return [r for r in self._results.values() if r.scan_id == scan_id]
+
+
+class FakeAssetRepository:
+    def __init__(self) -> None:
+        self._assets: dict[UUID, Asset] = {}
+
+    async def get_by_id(self, asset_id: UUID) -> Asset | None:
+        return self._assets.get(asset_id)
+
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        asset_type: AssetType | None = None,
+        limit: int = 20,
+        cursor: datetime | None = None,
+    ) -> list[Asset]:
+        results = [a for a in self._assets.values() if a.project_id == project_id]
+        if asset_type is not None:
+            results = [a for a in results if a.asset_type == asset_type]
+        results.sort(key=lambda a: a.created_at or a.first_seen, reverse=True)
+        if cursor is not None:
+            results = [a for a in results if (a.created_at or a.first_seen) < cursor]
+        return results[: limit + 1]
+
+    async def add(self, asset: Asset) -> None:
+        self._assets[asset.id] = asset
+
+    async def update(self, asset: Asset) -> None:
+        self._assets[asset.id] = asset
+
+    async def upsert(self, asset: Asset) -> Asset:
+        for existing in self._assets.values():
+            if (
+                existing.project_id == asset.project_id
+                and existing.asset_type == asset.asset_type
+                and existing.value == asset.value
+            ):
+                existing.last_seen = asset.last_seen
+                existing.source_scan_id = asset.source_scan_id
+                existing.metadata = asset.metadata
+                existing.in_scope = asset.in_scope
+                return existing
+        self._assets[asset.id] = asset
+        return asset
+
+    async def get_by_dedup(
+        self, project_id: UUID, asset_type: AssetType, value: str
+    ) -> Asset | None:
+        for asset in self._assets.values():
+            if (
+                asset.project_id == project_id
+                and asset.asset_type == asset_type
+                and asset.value == value
+            ):
+                return asset
+        return None
+
+
+class FakeFindingRepository:
+    def __init__(self) -> None:
+        self._findings: dict[UUID, Finding] = {}
+
+    async def add(self, finding: Finding) -> None:
+        self._findings[finding.id] = finding
+
+    async def get(self, finding_id: UUID) -> Finding | None:
+        return self._findings.get(finding_id)
+
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        severity: Severity | None = None,
+        limit: int = 20,
+        cursor: datetime | None = None,
+    ) -> list[Finding]:
+        results = [f for f in self._findings.values() if f.project_id == project_id]
+        if severity is not None:
+            results = [f for f in results if f.severity == severity]
+        results.sort(
+            key=lambda f: f.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
+        )
+        if cursor is not None:
+            results = [
+                f
+                for f in results
+                if (f.created_at or datetime.min.replace(tzinfo=UTC)) < cursor
+            ]
+        return results[: limit + 1]
+
+    async def get_by_dedup_key(
+        self, project_id: UUID, dedup_key: str
+    ) -> Finding | None:
+        for finding in self._findings.values():
+            if finding.project_id == project_id and finding.dedup_key == dedup_key:
+                return finding
+        return None
+
+    async def update_status(self, finding_id: UUID, status: FindingStatus) -> None:
+        finding = self._findings.get(finding_id)
+        if finding is not None:
+            finding.status = status

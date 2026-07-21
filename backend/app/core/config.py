@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     # --- Scope Guard (SRS §16.3) -------------------------------------------
     SCOPE_GUARD_STRICT: bool = Field(default=True)
 
+    # --- Scan execution (Milestone 3) ---------------------------------------
+    SCAN_ARTIFACTS_DIR: str = Field(default="/tmp/specter-artifacts")
+    SCAN_DEFAULT_TIMEOUT_SECONDS: int = Field(default=120)
+
     @property
     def is_local(self) -> bool:
         return self.APP_ENV == AppEnvironment.LOCAL

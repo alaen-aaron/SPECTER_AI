@@ -15,11 +15,18 @@ from datetime import date, datetime
 from uuid import UUID
 
 from app.domain.value_objects import (
+    SCAN_CANCELLABLE_STATUSES,
+    SCAN_TERMINAL_STATUSES,
+    VALID_PROJECT_TRANSITIONS,
+    AssetType,
     AuthorizationStatus,
+    FindingStatus,
     InvitationStatus,
     OrganizationRole,
     ProjectRole,
     ProjectState,
+    ScanStatus,
+    Severity,
     TargetType,
 )
 
@@ -86,8 +93,6 @@ class Project:
         return self.deleted_at is not None
 
     def can_transition_to(self, new_state: ProjectState) -> bool:
-        from app.domain.value_objects import VALID_PROJECT_TRANSITIONS
-
         return new_state in VALID_PROJECT_TRANSITIONS.get(self.state, frozenset())
 
 
@@ -179,3 +184,98 @@ class AuditLogEntry:
     created_at: datetime
     before_state: dict[str, object] = field(default_factory=dict)
     after_state: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class Scan:
+    """
+    A single scan execution (Milestone 3). One Scan = one plugin
+    invocation against one or more targets within one project.
+
+    `target_ids` and `plugin_config` aren't in the milestone spec's
+    minimal field list but are required to actually know what to run —
+    added as the "additional fields" the spec explicitly allows for.
+    """
+
+    id: UUID
+    project_id: UUID
+    initiated_by: UUID
+    plugin: str
+    status: ScanStatus
+    target_ids: list[UUID]
+    plugin_config: dict[str, object]
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    logs_path: str | None = None
+    artifacts_path: str | None = None
+    exit_code: int | None = None
+    error_message: str | None = None
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in SCAN_TERMINAL_STATUSES
+
+    @property
+    def is_cancellable(self) -> bool:
+        return self.status in SCAN_CANCELLABLE_STATUSES
+
+
+@dataclass(slots=True)
+class ToolResult:
+    """
+    Normalized output from a single plugin invocation against a single
+    target (Milestone 4A). One Scan may produce multiple ToolResults
+    if it targets multiple hosts, but in the current architecture each
+    scan invokes one plugin once, so typically one ToolResult per scan.
+    """
+
+    id: UUID
+    scan_id: UUID
+    plugin: str
+    target: str
+    normalized_payload: dict[str, object]
+    raw_output_path: str | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class Asset:
+    """
+    A deduplicated discovered entity — host, subdomain, service,
+    technology, or credential — tracked per-project with first/last
+    seen timestamps and source scan lineage (SRS §2.3 FR-3.2).
+    """
+
+    id: UUID
+    project_id: UUID
+    asset_type: AssetType
+    value: str
+    first_seen: datetime
+    last_seen: datetime
+    in_scope: bool = True
+    source_scan_id: UUID | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class Finding:
+    """
+    A correlated, deduplicated finding derived from one or more
+    ToolResults (SRS §5.2). Findings are tool-agnostic — the
+    correlation engine merges multiple tool outputs into a single
+    Finding via dedup_key.
+    """
+
+    id: UUID
+    project_id: UUID
+    title: str
+    severity: Severity
+    status: FindingStatus = FindingStatus.OPEN
+    description: str | None = None
+    asset_id: UUID | None = None
+    cvss_score: float | None = None
+    dedup_key: str = ""
+    tool_result_ids: list[UUID] = field(default_factory=list)
+    created_at: datetime | None = None

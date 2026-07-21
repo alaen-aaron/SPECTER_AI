@@ -65,6 +65,7 @@ services:
       - "8000:8000"
     volumes:
       - ../backend/app:/app/app
+      - scan_artifacts:/tmp/specter-artifacts
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,6 +89,7 @@ services:
       REDIS_URL: redis://redis:6379/0
     volumes:
       - ../backend/app:/app/app
+      - scan_artifacts:/tmp/specter-artifacts
     depends_on:
       postgres:
         condition: service_healthy
@@ -127,3 +129,4 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  scan_artifacts:

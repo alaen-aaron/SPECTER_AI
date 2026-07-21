@@ -22,6 +22,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.asset_service import AssetService
 from app.application.auth_service import (
     LoginService,
     LogoutAllService,
@@ -30,18 +31,27 @@ from app.application.auth_service import (
     RegisterUserService,
 )
 from app.application.authorization_service import AuthorizationRecordService
+from app.application.finding_service import FindingService
 from app.application.organization_service import OrganizationService
 from app.application.project_service import ProjectService
+from app.application.scan_service import ScanService, ScanTaskDispatcher
 from app.application.scope_guard_service import ScopeGuardService
 from app.application.target_service import TargetService
 from app.core.config import Settings, get_settings
 from app.domain.entities import OrganizationMember, ProjectMember, User
-from app.domain.exceptions import InsufficientPermissionError
-from app.domain.value_objects import OrganizationRole, ProjectRole
+from app.domain.exceptions import InsufficientPermissionError, NotAProjectMemberError
+from app.domain.value_objects import (
+    ORGANIZATION_ADMIN_ROLES,
+    OrganizationRole,
+    ProjectRole,
+)
+from app.infrastructure.celery_app.dispatcher import CeleryScanTaskDispatcher
+from app.infrastructure.db.repositories.asset_repository import SqlAlchemyAssetRepository
 from app.infrastructure.db.repositories.audit_log_repository import SqlAlchemyAuditLogRepository
 from app.infrastructure.db.repositories.authorization_repository import (
     SqlAlchemyAuthorizationRecordRepository,
 )
+from app.infrastructure.db.repositories.finding_repository import SqlAlchemyFindingRepository
 from app.infrastructure.db.repositories.identity_repository import (
     SqlAlchemySessionRepository,
     SqlAlchemyUserRepository,
@@ -50,6 +60,7 @@ from app.infrastructure.db.repositories.organization_repository import (
     SqlAlchemyOrganizationRepository,
 )
 from app.infrastructure.db.repositories.project_repository import SqlAlchemyProjectRepository
+from app.infrastructure.db.repositories.scan_repository import SqlAlchemyScanRepository
 from app.infrastructure.db.repositories.target_repository import SqlAlchemyTargetRepository
 from app.infrastructure.db.session import get_db_session
 from app.infrastructure.security.jwt import (
@@ -59,6 +70,8 @@ from app.infrastructure.security.jwt import (
 )
 from app.infrastructure.security.password_hasher import hash_password, verify_password
 from app.infrastructure.security.tokens import generate_refresh_token, hash_refresh_token
+from app.plugins.manager import PluginManager
+from app.plugins.registry import registry as plugin_registry
 
 # --- Tier 1: repositories ----------------------------------------------------
 
@@ -103,6 +116,24 @@ def get_audit_log_repository(
     session: AsyncSession = Depends(get_db_session),
 ) -> SqlAlchemyAuditLogRepository:
     return SqlAlchemyAuditLogRepository(session)
+
+
+def get_scan_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyScanRepository:
+    return SqlAlchemyScanRepository(session)
+
+
+def get_asset_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyAssetRepository:
+    return SqlAlchemyAssetRepository(session)
+
+
+def get_finding_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyFindingRepository:
+    return SqlAlchemyFindingRepository(session)
 
 
 # --- Tier 2: application services --------------------------------------------
@@ -186,6 +217,43 @@ def get_scope_guard_service(
     auth_repo: SqlAlchemyAuthorizationRecordRepository = Depends(get_authorization_repository),
 ) -> ScopeGuardService:
     return ScopeGuardService(project_repo, target_repo, auth_repo)
+
+
+def get_plugin_manager() -> PluginManager:
+    """
+    Ensures built-in plugins are registered (idempotent — `builtin.py`
+    just re-registers the same names if imported more than once) before
+    handing out a `PluginManager` bound to the process-wide registry.
+    """
+    import app.plugins.builtin  # noqa: F401 - side-effect import
+
+    return PluginManager(plugin_registry)
+
+
+def get_scan_task_dispatcher() -> ScanTaskDispatcher:
+    return CeleryScanTaskDispatcher()
+
+
+def get_scan_service(
+    scan_repo: SqlAlchemyScanRepository = Depends(get_scan_repository),
+    scope_guard: ScopeGuardService = Depends(get_scope_guard_service),
+    plugin_manager: PluginManager = Depends(get_plugin_manager),
+    dispatcher: ScanTaskDispatcher = Depends(get_scan_task_dispatcher),
+) -> ScanService:
+    return ScanService(scan_repo, scope_guard, plugin_manager, dispatcher)
+
+
+def get_asset_service(
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+) -> AssetService:
+    return AssetService(asset_repo)
+
+
+def get_finding_service(
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+) -> FindingService:
+    return FindingService(finding_repo, asset_repo)
 
 
 # --- Tier 3: authentication + RBAC --------------------------------------------
@@ -298,6 +366,171 @@ def require_project_role_for_target(
         if allowed_roles and member.role not in allowed_roles:
             raise InsufficientPermissionError(tuple(r.value for r in allowed_roles))
         return member
+
+    return _checker
+
+
+_SCAN_CAPABLE_PROJECT_ROLES = frozenset(
+    {ProjectRole.OWNER, ProjectRole.ADMIN, ProjectRole.LEAD_TESTER, ProjectRole.TESTER}
+)
+
+
+async def _check_scan_launch_permission(
+    project_id: UUID,
+    current_user: User,
+    project_service: ProjectService,
+    org_service: OrganizationService,
+) -> ProjectMember | OrganizationMember:
+    """
+    Shared logic behind both `require_scan_launch_permission` (routes
+    keyed by `{project_id}`) and `require_scan_permission_for_scan`
+    (routes keyed by `{scan_id}` alone, e.g. cancel) — one place decides
+    what "authorized to launch/cancel a scan" means (Milestone 3 spec:
+    "Only: Project Owner, Organization Admin, Authorized Users").
+
+    "Authorized Users" is read as: any project member whose role does
+    testing work (Owner/Admin/Lead Tester/Tester) — Read-Only and
+    Client Viewer cannot launch or cancel scans. An organization
+    Owner/Admin is also allowed even without explicit project
+    membership, given org-level oversight responsibility.
+    """
+    try:
+        project_member = await project_service.require_member(project_id, current_user.id)
+    except NotAProjectMemberError:
+        project_member = None
+
+    if project_member is not None and project_member.role in _SCAN_CAPABLE_PROJECT_ROLES:
+        return project_member
+
+    project = await project_service.get(project_id)
+    org_member = await org_service.get_member_or_none(project.organization_id, current_user.id)
+    if org_member is not None and org_member.role in ORGANIZATION_ADMIN_ROLES:
+        return org_member
+
+    raise InsufficientPermissionError(
+        (
+            "project:owner",
+            "project:admin",
+            "project:lead_tester",
+            "project:tester",
+            "org:owner",
+            "org:admin",
+        )
+    )
+
+
+def require_scan_launch_permission() -> (
+    Callable[..., Awaitable[ProjectMember | OrganizationMember]]
+):
+    """For routes with a `{project_id}` path segment (launching a scan)."""
+
+    async def _checker(
+        project_id: UUID,
+        current_user: User = Depends(get_current_user),
+        project_service: ProjectService = Depends(get_project_service),
+        org_service: OrganizationService = Depends(get_organization_service),
+    ) -> ProjectMember | OrganizationMember:
+        return await _check_scan_launch_permission(
+            project_id, current_user, project_service, org_service
+        )
+
+    return _checker
+
+
+def require_scan_permission_for_scan() -> (
+    Callable[..., Awaitable[ProjectMember | OrganizationMember]]
+):
+    """
+    For routes keyed by `{scan_id}` alone (get/cancel a single scan) —
+    resolves the scan's owning project first, then applies the exact
+    same permission rule as launching one. A scan's permissions are
+    always its project's permissions, never a separate RBAC layer —
+    the same principle Milestone 2 established for
+    `require_project_role_for_target`.
+    """
+
+    async def _checker(
+        scan_id: UUID,
+        current_user: User = Depends(get_current_user),
+        scan_service: ScanService = Depends(get_scan_service),
+        project_service: ProjectService = Depends(get_project_service),
+        org_service: OrganizationService = Depends(get_organization_service),
+    ) -> ProjectMember | OrganizationMember:
+        scan = await scan_service.get(scan_id)
+        return await _check_scan_launch_permission(
+            scan.project_id, current_user, project_service, org_service
+        )
+
+    return _checker
+
+
+def require_scan_view_permission() -> Callable[..., Awaitable[ProjectMember]]:
+    """For `GET /scans/{scan_id}` — any project member may view a scan,
+    unlike launching/cancelling one, which needs `_SCAN_CAPABLE_PROJECT_ROLES`."""
+
+    async def _checker(
+        scan_id: UUID,
+        current_user: User = Depends(get_current_user),
+        scan_service: ScanService = Depends(get_scan_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        scan = await scan_service.get(scan_id)
+        return await project_service.require_member(scan.project_id, current_user.id)
+
+    return _checker
+
+
+def require_project_role_for_asset(
+    *allowed_roles: ProjectRole,
+) -> Callable[..., Awaitable[ProjectMember]]:
+    """Permission dependency for routes keyed by `asset_id` alone."""
+
+    async def _checker(
+        asset_id: UUID,
+        current_user: User = Depends(get_current_user),
+        asset_service: AssetService = Depends(get_asset_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        asset = await asset_service.get(asset_id)
+        member = await project_service.require_member(asset.project_id, current_user.id)
+        if allowed_roles and member.role not in allowed_roles:
+            raise InsufficientPermissionError(tuple(r.value for r in allowed_roles))
+        return member
+
+    return _checker
+
+
+def require_finding_view_permission() -> Callable[..., Awaitable[ProjectMember]]:
+    """For `GET /findings/{finding_id}` — any project member may view."""
+
+    async def _checker(
+        finding_id: UUID,
+        current_user: User = Depends(get_current_user),
+        finding_service: FindingService = Depends(get_finding_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        finding = await finding_service.get(finding_id)
+        return await project_service.require_member(finding.project_id, current_user.id)
+
+    return _checker
+
+
+def require_finding_edit_permission() -> (
+    Callable[..., Awaitable[ProjectMember | OrganizationMember]]
+):
+    """For `PATCH /findings/{finding_id}/status` — scan-capable roles or org admin."""
+
+    async def _checker(
+        finding_id: UUID,
+        current_user: User = Depends(get_current_user),
+        finding_service: FindingService = Depends(get_finding_service),
+        project_service: ProjectService = Depends(get_project_service),
+        org_service: OrganizationService = Depends(get_organization_service),
+    ) -> ProjectMember | OrganizationMember:
+        finding = await finding_service.get(finding_id)
+        return await _check_scan_launch_permission(
+            finding.project_id, current_user, project_service, org_service
+        )
 
     return _checker
 

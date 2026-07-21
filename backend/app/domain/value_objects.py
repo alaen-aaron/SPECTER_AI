@@ -88,3 +88,50 @@ class InvitationStatus(str, Enum):
     ACCEPTED = "accepted"
     REVOKED = "revoked"
     EXPIRED = "expired"
+
+
+class ScanStatus(str, Enum):
+    """Scan lifecycle state (Milestone 3, SRS §2.6/§13)."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+# Terminal states a scan can never leave, and states from which
+# cancellation is still meaningful. Used by ScanService to reject
+# invalid transitions the same way VALID_PROJECT_TRANSITIONS does for
+# projects — one source of truth, not scattered if/else checks.
+SCAN_TERMINAL_STATUSES = frozenset({ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED})
+SCAN_CANCELLABLE_STATUSES = frozenset({ScanStatus.QUEUED, ScanStatus.RUNNING})
+
+
+class AssetType(str, Enum):
+    """Asset classification (SRS §2.3 FR-3.2)."""
+
+    HOST = "host"
+    SUBDOMAIN = "subdomain"
+    SERVICE = "service"
+    TECHNOLOGY = "technology"
+    CREDENTIAL = "credential"
+
+
+class Severity(str, Enum):
+    """Finding severity (SRS §5.2 findings table)."""
+
+    INFO = "info"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class FindingStatus(str, Enum):
+    """Finding lifecycle state."""
+
+    OPEN = "open"
+    CONFIRMED = "confirmed"
+    FALSE_POSITIVE = "false_positive"
+    REMEDIATED = "remediated"

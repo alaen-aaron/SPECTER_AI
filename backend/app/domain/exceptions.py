@@ -151,3 +151,50 @@ class ProjectNotActiveError(DomainError):
             f"Project {project_id} is not Active (current state: {current_state}); "
             "scan execution is only permitted for Active projects."
         )
+
+
+# --- Scans (Milestone 3) -----------------------------------------------------
+
+
+class ScanNotFoundError(DomainError):
+    def __init__(self, scan_id: UUID) -> None:
+        self.scan_id = scan_id
+        super().__init__(f"Scan {scan_id} not found.")
+
+
+class ScanNotCancellableError(DomainError):
+    def __init__(self, scan_id: UUID, current_status: str) -> None:
+        self.scan_id = scan_id
+        self.current_status = current_status
+        super().__init__(
+            f"Scan {scan_id} cannot be cancelled from status '{current_status}' "
+            "(only 'queued' or 'running' scans can be cancelled)."
+        )
+
+
+class PluginNotFoundError(DomainError):
+    def __init__(self, plugin_name: str) -> None:
+        self.plugin_name = plugin_name
+        super().__init__(f"No registered plugin named '{plugin_name}'.")
+
+
+class InvalidPluginConfigError(DomainError):
+    def __init__(self, plugin_name: str, reason: str) -> None:
+        self.plugin_name = plugin_name
+        self.reason = reason
+        super().__init__(f"Invalid configuration for plugin '{plugin_name}': {reason}")
+
+
+# --- Assets & Findings (Milestone 4A) ---------------------------------------
+
+
+class AssetNotFoundError(DomainError):
+    def __init__(self, asset_id: UUID) -> None:
+        self.asset_id = asset_id
+        super().__init__(f"Asset {asset_id} not found.")
+
+
+class FindingNotFoundError(DomainError):
+    def __init__(self, finding_id: UUID) -> None:
+        self.finding_id = finding_id
+        super().__init__(f"Finding {finding_id} not found.")

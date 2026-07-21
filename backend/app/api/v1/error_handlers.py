@@ -15,12 +15,15 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.domain.exceptions import (
+    AssetNotFoundError,
     AuthorizationRecordNotFoundError,
     DomainError,
     EmailAlreadyRegisteredError,
+    FindingNotFoundError,
     InactiveUserError,
     InsufficientPermissionError,
     InvalidCredentialsError,
+    InvalidPluginConfigError,
     InvalidProjectStateTransitionError,
     InvalidRefreshTokenError,
     InvalidTargetValueError,
@@ -29,9 +32,12 @@ from app.domain.exceptions import (
     NotAProjectMemberError,
     OrganizationNotFoundError,
     OutOfScopeTargetError,
+    PluginNotFoundError,
     ProjectNotActiveError,
     ProjectNotAuthorizedError,
     ProjectNotFoundError,
+    ScanNotCancellableError,
+    ScanNotFoundError,
     TargetNotFoundError,
 )
 
@@ -58,6 +64,12 @@ _EXCEPTION_MAP: dict[type[DomainError], tuple[int, str]] = {
     OutOfScopeTargetError: (422, "out-of-scope-target"),
     NoActiveAuthorizationError: (422, "no-active-authorization"),
     ProjectNotActiveError: (422, "project-not-active"),
+    ScanNotFoundError: (404, "scan-not-found"),
+    ScanNotCancellableError: (409, "scan-not-cancellable"),
+    PluginNotFoundError: (404, "plugin-not-found"),
+    InvalidPluginConfigError: (422, "invalid-plugin-config"),
+    AssetNotFoundError: (404, "asset-not-found"),
+    FindingNotFoundError: (404, "finding-not-found"),
 }
 
 _DEFAULT_STATUS_AND_SLUG = (400, "domain-error")

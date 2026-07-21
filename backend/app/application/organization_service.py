@@ -82,6 +82,15 @@ class OrganizationService:
             raise NotAnOrganizationMemberError(organization_id)
         return member
 
+    async def get_member_or_none(
+        self, organization_id: UUID, user_id: UUID
+    ) -> OrganizationMember | None:
+        """Non-raising counterpart to `require_member`, for callers that
+        need to try organization membership as a fallback check (e.g.
+        `require_scan_launch_permission`) without catching an exception
+        for what is, in that context, an entirely expected outcome."""
+        return await self._organizations.get_member(organization_id, user_id)
+
     async def create_invitation(
         self,
         organization_id: UUID,

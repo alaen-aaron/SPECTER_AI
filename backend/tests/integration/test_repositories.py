@@ -14,8 +14,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.domain.entities import AuthorizationRecord, Organization, Project, Target, User
-from app.domain.value_objects import AuthorizationStatus, ProjectState, TargetType
+from app.domain.entities import AuthorizationRecord, Organization, Project, Scan, Target, User
+from app.domain.value_objects import AuthorizationStatus, ProjectState, ScanStatus, TargetType
 from app.infrastructure.db.repositories.authorization_repository import (
     SqlAlchemyAuthorizationRecordRepository,
 )
@@ -24,6 +24,7 @@ from app.infrastructure.db.repositories.organization_repository import (
     SqlAlchemyOrganizationRepository,
 )
 from app.infrastructure.db.repositories.project_repository import SqlAlchemyProjectRepository
+from app.infrastructure.db.repositories.scan_repository import SqlAlchemyScanRepository
 from app.infrastructure.db.repositories.target_repository import SqlAlchemyTargetRepository
 from tests.integration.conftest import requires_postgres
 
@@ -193,3 +194,133 @@ async def test_authorization_record_active_lookup_respects_date_range(db_session
     fetched = await auth_repo.get_active_for_project(project.id, now)
     assert fetched is not None
     assert fetched.id == active_record.id
+
+
+@pytest.mark.asyncio
+async def test_scan_lifecycle_methods_persist_correctly(db_session):
+    """
+    Verifies `create`/`get`/`update_status`/`append_log`/`complete`/`fail`
+    all round-trip through real Postgres JSONB columns correctly —
+    including that `target_ids` (stored as a JSONB array of strings)
+    comes back as actual `UUID` objects, not strings.
+    """
+    org_repo = SqlAlchemyOrganizationRepository(db_session)
+    project_repo = SqlAlchemyProjectRepository(db_session)
+    user_repo = SqlAlchemyUserRepository(db_session)
+    scan_repo = SqlAlchemyScanRepository(db_session)
+
+    org = Organization(id=uuid4(), name="Scan Test Org", created_at=datetime.now(UTC))
+    await org_repo.add(org)
+
+    initiator = User(
+        id=uuid4(),
+        email="initiator@example.com",
+        password_hash="hash",
+        full_name="Initiator",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    await user_repo.add(initiator)
+
+    now = datetime.now(UTC)
+    project = Project(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Scan Test Project",
+        description=None,
+        state=ProjectState.ACTIVE,
+        tags=[],
+        client_metadata={},
+        created_at=now,
+        updated_at=now,
+    )
+    await project_repo.add(project)
+
+    target_id = uuid4()
+    scan = Scan(
+        id=uuid4(),
+        project_id=project.id,
+        initiated_by=initiator.id,
+        plugin="echo",
+        status=ScanStatus.QUEUED,
+        target_ids=[target_id],
+        plugin_config={"nested": {"key": "value"}},
+        created_at=now,
+    )
+    await scan_repo.create(scan)
+
+    fetched = await scan_repo.get(scan.id)
+    assert fetched is not None
+    assert fetched.target_ids == [target_id]
+    assert isinstance(fetched.target_ids[0], type(target_id))
+    assert fetched.plugin_config == {"nested": {"key": "value"}}
+
+    await scan_repo.update_status(scan.id, ScanStatus.RUNNING)
+    running = await scan_repo.get(scan.id)
+    assert running.status is ScanStatus.RUNNING
+    assert running.started_at is not None
+
+    await scan_repo.append_log(scan.id, "/tmp/some/log/path")
+    logged = await scan_repo.get(scan.id)
+    assert logged.logs_path == "/tmp/some/log/path"
+
+    await scan_repo.complete(scan.id, 0, "/tmp/some/artifacts")
+    completed = await scan_repo.get(scan.id)
+    assert completed.status is ScanStatus.COMPLETED
+    assert completed.exit_code == 0
+    assert completed.artifacts_path == "/tmp/some/artifacts"
+    assert completed.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_scan_fail_records_error_message(db_session):
+    org_repo = SqlAlchemyOrganizationRepository(db_session)
+    project_repo = SqlAlchemyProjectRepository(db_session)
+    user_repo = SqlAlchemyUserRepository(db_session)
+    scan_repo = SqlAlchemyScanRepository(db_session)
+
+    org = Organization(id=uuid4(), name="Scan Fail Org", created_at=datetime.now(UTC))
+    await org_repo.add(org)
+
+    initiator = User(
+        id=uuid4(),
+        email="initiator2@example.com",
+        password_hash="hash",
+        full_name="Initiator2",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    await user_repo.add(initiator)
+
+    now = datetime.now(UTC)
+    project = Project(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Scan Fail Project",
+        description=None,
+        state=ProjectState.ACTIVE,
+        tags=[],
+        client_metadata={},
+        created_at=now,
+        updated_at=now,
+    )
+    await project_repo.add(project)
+
+    scan = Scan(
+        id=uuid4(),
+        project_id=project.id,
+        initiated_by=initiator.id,
+        plugin="ping",
+        status=ScanStatus.QUEUED,
+        target_ids=[],
+        plugin_config={},
+        created_at=now,
+    )
+    await scan_repo.create(scan)
+
+    await scan_repo.fail(scan.id, "binary not found", None)
+    failed = await scan_repo.get(scan.id)
+    assert failed.status is ScanStatus.FAILED
+    assert failed.error_message == "binary not found"
+    assert failed.exit_code is None
+    assert failed.completed_at is not None

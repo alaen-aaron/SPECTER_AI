@@ -20,18 +20,29 @@ from typing import Protocol
 from uuid import UUID
 
 from app.domain.entities import (
+    Asset,
     AuditLogEntry,
     AuthorizationRecord,
+    Finding,
     Organization,
     OrganizationInvitation,
     OrganizationMember,
     Project,
     ProjectMember,
+    Scan,
     Session,
     Target,
+    ToolResult,
     User,
 )
-from app.domain.value_objects import OrganizationRole, ProjectRole
+from app.domain.value_objects import (
+    AssetType,
+    FindingStatus,
+    OrganizationRole,
+    ProjectRole,
+    ScanStatus,
+    Severity,
+)
 
 
 class UserRepository(Protocol):
@@ -103,3 +114,63 @@ class AuthorizationRecordRepository(Protocol):
 class AuditLogRepository(Protocol):
     async def add(self, entry: AuditLogEntry) -> None: ...
     async def list_for_organization(self, organization_id: UUID) -> list[AuditLogEntry]: ...
+
+
+class ScanRepository(Protocol):
+    """
+    Milestone 3. `update_status`, `append_log`, `complete`, and `fail`
+    are separate, narrow methods (rather than one generic `update`)
+    because each corresponds to a distinct, meaningful lifecycle
+    transition the ExecutionEngine performs — matching the milestone
+    spec's explicit method list and keeping each call-site's intent
+    self-evident at the call, not buried in a diff of arbitrary fields.
+    """
+
+    async def create(self, scan: Scan) -> None: ...
+    async def get(self, scan_id: UUID) -> Scan | None: ...
+    async def list(
+        self, project_id: UUID, limit: int = 20, cursor: datetime | None = None
+    ) -> list[Scan]: ...
+    async def update_status(self, scan_id: UUID, status: ScanStatus) -> None: ...
+    async def append_log(self, scan_id: UUID, logs_path: str) -> None: ...
+    async def complete(self, scan_id: UUID, exit_code: int, artifacts_path: str | None) -> None: ...
+    async def fail(self, scan_id: UUID, error_message: str, exit_code: int | None) -> None: ...
+
+
+class ToolResultRepository(Protocol):
+    async def add(self, tool_result: ToolResult) -> None: ...
+    async def get(self, tool_result_id: UUID) -> ToolResult | None: ...
+    async def list_for_scan(self, scan_id: UUID) -> list[ToolResult]: ...
+
+
+class AssetRepository(Protocol):
+    async def get_by_id(self, asset_id: UUID) -> Asset | None: ...
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        asset_type: AssetType | None = None,
+        limit: int = 20,
+        cursor: datetime | None = None,
+    ) -> list[Asset]: ...
+    async def add(self, asset: Asset) -> None: ...
+    async def update(self, asset: Asset) -> None: ...
+    async def upsert(self, asset: Asset) -> Asset: ...
+    async def get_by_dedup(
+        self, project_id: UUID, asset_type: AssetType, value: str
+    ) -> Asset | None: ...
+
+
+class FindingRepository(Protocol):
+    async def add(self, finding: Finding) -> None: ...
+    async def get(self, finding_id: UUID) -> Finding | None: ...
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        severity: Severity | None = None,
+        limit: int = 20,
+        cursor: datetime | None = None,
+    ) -> list[Finding]: ...
+    async def get_by_dedup_key(
+        self, project_id: UUID, dedup_key: str
+    ) -> Finding | None: ...
+    async def update_status(self, finding_id: UUID, status: FindingStatus) -> None: ...
