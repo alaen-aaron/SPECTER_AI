@@ -23,12 +23,17 @@ from app.domain.entities import (
     Asset,
     AuditLogEntry,
     AuthorizationRecord,
+    Evidence,
     Finding,
+    GraphEdge,
+    GraphNode,
     Organization,
     OrganizationInvitation,
     OrganizationMember,
     Project,
     ProjectMember,
+    Report,
+    ReportVersion,
     Scan,
     Session,
     Target,
@@ -38,8 +43,11 @@ from app.domain.entities import (
 from app.domain.value_objects import (
     AssetType,
     FindingStatus,
+    GraphEdgeType,
+    GraphNodeType,
     OrganizationRole,
     ProjectRole,
+    ReportStatus,
     ScanStatus,
     Severity,
 )
@@ -174,3 +182,71 @@ class FindingRepository(Protocol):
         self, project_id: UUID, dedup_key: str
     ) -> Finding | None: ...
     async def update_status(self, finding_id: UUID, status: FindingStatus) -> None: ...
+
+
+class EvidenceRepository(Protocol):
+    async def add(self, evidence: Evidence) -> None: ...
+    async def get(self, evidence_id: UUID) -> Evidence | None: ...
+    async def list_for_finding(self, finding_id: UUID) -> list[Evidence]: ...
+    async def list_for_project(self, project_id: UUID) -> list[Evidence]: ...
+
+
+class ReportRepository(Protocol):
+    async def add(self, report: Report) -> None: ...
+    async def get(self, report_id: UUID) -> Report | None: ...
+    async def list_for_project(self, project_id: UUID) -> list[Report]: ...
+    async def update_status(self, report_id: UUID, status: ReportStatus) -> None: ...
+
+
+class ReportVersionRepository(Protocol):
+    async def add(self, version: ReportVersion) -> None: ...
+    async def get(self, version_id: UUID) -> ReportVersion | None: ...
+    async def list_for_report(self, report_id: UUID) -> list[ReportVersion]: ...
+    async def get_latest(self, report_id: UUID) -> ReportVersion | None: ...
+
+
+class GraphRepository(Protocol):
+    async def upsert_node(self, node: GraphNode) -> GraphNode: ...
+    async def upsert_edge(self, edge: GraphEdge) -> GraphEdge: ...
+    async def get_node(self, node_id: UUID) -> GraphNode | None: ...
+    async def get_edge(self, edge_id: UUID) -> GraphEdge | None: ...
+    async def find_node(
+        self,
+        project_id: UUID,
+        node_type: GraphNodeType,
+        source_table: str,
+        source_id: UUID,
+    ) -> GraphNode | None: ...
+    async def find_edge(
+        self,
+        project_id: UUID,
+        from_node_id: UUID,
+        to_node_id: UUID,
+        relationship_type: GraphEdgeType,
+    ) -> GraphEdge | None: ...
+    async def get_neighbors(
+        self,
+        node_id: UUID,
+        edge_type: GraphEdgeType | None = None,
+        direction: str = "outgoing",
+    ) -> list[GraphNode]: ...
+    async def shortest_path(
+        self,
+        from_node_id: UUID,
+        to_node_id: UUID,
+        max_depth: int = 10,
+    ) -> list[GraphNode] | None: ...
+    async def list_nodes_for_project(
+        self,
+        project_id: UUID,
+        node_type: GraphNodeType | None = None,
+    ) -> list[GraphNode]: ...
+    async def list_edges_for_project(
+        self,
+        project_id: UUID,
+        relationship_type: GraphEdgeType | None = None,
+    ) -> list[GraphEdge]: ...
+    async def remove_node(self, node_id: UUID) -> None: ...
+    async def remove_edge(self, edge_id: UUID) -> None: ...
+    async def remove_edges_for_node(self, node_id: UUID) -> None: ...
+    async def clear_project(self, project_id: UUID) -> None: ...

@@ -13,10 +13,13 @@ from app.api.v1.routers import (
     assets,
     auth,
     authorization,
+    evidence,
     findings,
+    graph,
     health,
     organizations,
     projects,
+    reports,
     scans,
     targets,
 )
@@ -31,3 +34,6 @@ api_v1_router.include_router(authorization.router)
 api_v1_router.include_router(scans.router)
 api_v1_router.include_router(assets.router)
 api_v1_router.include_router(findings.router)
+api_v1_router.include_router(evidence.router)
+api_v1_router.include_router(reports.router)
+api_v1_router.include_router(graph.router)

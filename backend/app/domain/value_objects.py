@@ -135,3 +135,42 @@ class FindingStatus(str, Enum):
     CONFIRMED = "confirmed"
     FALSE_POSITIVE = "false_positive"
     REMEDIATED = "remediated"
+
+
+class EvidenceType(str, Enum):
+    """Evidence classification (SRS §2.9)."""
+
+    SCREENSHOT = "screenshot"
+    RAW_LOG = "raw_log"
+    SESSION_RECORDING = "session_recording"
+    REQUEST_RESPONSE = "request_response"
+
+
+class ReportStatus(str, Enum):
+    """Report lifecycle (SRS §2.11 FR-11.2)."""
+
+    DRAFT = "draft"
+    FINAL = "final"
+
+
+class GraphNodeType(str, Enum):
+    """Knowledge Graph node types (SRS §15A.2)."""
+
+    ASSET = "asset"
+    FINDING = "finding"
+    CREDENTIAL = "credential"
+    TECHNOLOGY = "technology"
+    EVIDENCE = "evidence"
+
+
+class GraphEdgeType(str, Enum):
+    """Knowledge Graph edge types (SRS §15A.2)."""
+
+    HOSTS = "hosts"
+    RUNS = "runs"
+    EXPOSES = "exposes"
+    VULNERABLE_TO = "vulnerable_to"
+    AUTHENTICATES_AS = "authenticates_as"
+    DERIVED_FROM = "derived_from"
+    COMMUNICATES_WITH = "communicates_with"
+    EVIDENCED_BY = "evidenced_by"

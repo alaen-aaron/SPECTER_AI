@@ -19,7 +19,11 @@ from app.domain.exceptions import (
     AuthorizationRecordNotFoundError,
     DomainError,
     EmailAlreadyRegisteredError,
+    EvidenceAttachmentError,
+    EvidenceNotFoundError,
     FindingNotFoundError,
+    GraphEdgeNotFoundError,
+    GraphNodeNotFoundError,
     InactiveUserError,
     InsufficientPermissionError,
     InvalidCredentialsError,
@@ -36,6 +40,8 @@ from app.domain.exceptions import (
     ProjectNotActiveError,
     ProjectNotAuthorizedError,
     ProjectNotFoundError,
+    ReportAlreadyFinalizedError,
+    ReportNotFoundError,
     ScanNotCancellableError,
     ScanNotFoundError,
     TargetNotFoundError,
@@ -70,6 +76,12 @@ _EXCEPTION_MAP: dict[type[DomainError], tuple[int, str]] = {
     InvalidPluginConfigError: (422, "invalid-plugin-config"),
     AssetNotFoundError: (404, "asset-not-found"),
     FindingNotFoundError: (404, "finding-not-found"),
+    EvidenceNotFoundError: (404, "evidence-not-found"),
+    EvidenceAttachmentError: (422, "evidence-attachment-error"),
+    ReportNotFoundError: (404, "report-not-found"),
+    ReportAlreadyFinalizedError: (409, "report-already-finalized"),
+    GraphNodeNotFoundError: (404, "graph-node-not-found"),
+    GraphEdgeNotFoundError: (404, "graph-edge-not-found"),
 }
 
 _DEFAULT_STATUS_AND_SLUG = (400, "domain-error")

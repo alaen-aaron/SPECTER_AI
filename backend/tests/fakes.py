@@ -24,12 +24,17 @@ from app.domain.entities import (
     Asset,
     AuditLogEntry,
     AuthorizationRecord,
+    Evidence,
     Finding,
+    GraphEdge,
+    GraphNode,
     Organization,
     OrganizationInvitation,
     OrganizationMember,
     Project,
     ProjectMember,
+    Report,
+    ReportVersion,
     Scan,
     Session,
     Target,
@@ -39,8 +44,11 @@ from app.domain.entities import (
 from app.domain.value_objects import (
     AssetType,
     FindingStatus,
+    GraphEdgeType,
+    GraphNodeType,
     OrganizationRole,
     ProjectRole,
+    ReportStatus,
     ScanStatus,
     Severity,
 )
@@ -411,3 +419,253 @@ class FakeFindingRepository:
         finding = self._findings.get(finding_id)
         if finding is not None:
             finding.status = status
+
+
+class FakeEvidenceRepository:
+    def __init__(self) -> None:
+        self._evidence: dict[UUID, Evidence] = {}
+        self._findings: FakeFindingRepository | None = None
+
+    def set_findings(self, findings: FakeFindingRepository) -> None:
+        self._findings = findings
+
+    async def add(self, evidence: Evidence) -> None:
+        self._evidence[evidence.id] = evidence
+
+    async def get(self, evidence_id: UUID) -> Evidence | None:
+        return self._evidence.get(evidence_id)
+
+    async def list_for_finding(self, finding_id: UUID) -> list[Evidence]:
+        return [
+            e for e in self._evidence.values() if e.finding_id == finding_id
+        ]
+
+    async def list_for_project(self, project_id: UUID) -> list[Evidence]:
+        if self._findings is None:
+            return []
+        finding_ids = {
+            f.id for f in self._findings._findings.values()
+            if f.project_id == project_id
+        }
+        return [
+            e for e in self._evidence.values() if e.finding_id in finding_ids
+        ]
+
+
+class FakeReportRepository:
+    def __init__(self) -> None:
+        self._reports: dict[UUID, Report] = {}
+
+    async def add(self, report: Report) -> None:
+        self._reports[report.id] = report
+
+    async def get(self, report_id: UUID) -> Report | None:
+        return self._reports.get(report_id)
+
+    async def list_for_project(self, project_id: UUID) -> list[Report]:
+        return sorted(
+            [r for r in self._reports.values() if r.project_id == project_id],
+            key=lambda r: r.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+    async def update_status(self, report_id: UUID, status: ReportStatus) -> None:
+        report = self._reports.get(report_id)
+        if report is not None:
+            report.status = status
+
+
+class FakeReportVersionRepository:
+    def __init__(self) -> None:
+        self._versions: dict[UUID, ReportVersion] = {}
+
+    async def add(self, version: ReportVersion) -> None:
+        self._versions[version.id] = version
+
+    async def get(self, version_id: UUID) -> ReportVersion | None:
+        return self._versions.get(version_id)
+
+    async def list_for_report(self, report_id: UUID) -> list[ReportVersion]:
+        return sorted(
+            [v for v in self._versions.values() if v.report_id == report_id],
+            key=lambda v: v.version_number,
+        )
+
+    async def get_latest(self, report_id: UUID) -> ReportVersion | None:
+        versions = [v for v in self._versions.values() if v.report_id == report_id]
+        if not versions:
+            return None
+        return max(versions, key=lambda v: v.version_number)
+
+
+class FakeGraphRepository:
+    def __init__(self) -> None:
+        self._nodes: dict[UUID, GraphNode] = {}
+        self._edges: dict[UUID, GraphEdge] = {}
+
+    async def upsert_node(self, node: GraphNode) -> GraphNode:
+        existing = await self.find_node(
+            node.project_id, node.node_type, node.source_table, node.source_id
+        )
+        if existing is not None:
+            self._nodes[existing.id].label = node.label
+            self._nodes[existing.id].properties = node.properties
+            return self._nodes[existing.id]
+        self._nodes[node.id] = node
+        return node
+
+    async def upsert_edge(self, edge: GraphEdge) -> GraphEdge:
+        existing = await self.find_edge(
+            edge.project_id, edge.from_node_id, edge.to_node_id, edge.relationship_type
+        )
+        if existing is not None:
+            self._edges[existing.id].weight = edge.weight
+            self._edges[existing.id].properties = edge.properties
+            return self._edges[existing.id]
+        self._edges[edge.id] = edge
+        return edge
+
+    async def get_node(self, node_id: UUID) -> GraphNode | None:
+        return self._nodes.get(node_id)
+
+    async def get_edge(self, edge_id: UUID) -> GraphEdge | None:
+        return self._edges.get(edge_id)
+
+    async def find_node(
+        self,
+        project_id: UUID,
+        node_type: GraphNodeType,
+        source_table: str,
+        source_id: UUID,
+    ) -> GraphNode | None:
+        for node in self._nodes.values():
+            if (
+                node.project_id == project_id
+                and node.node_type == node_type
+                and node.source_table == source_table
+                and node.source_id == source_id
+            ):
+                return node
+        return None
+
+    async def find_node_by_source(
+        self, project_id: UUID, source_table: str, source_id: UUID
+    ) -> GraphNode | None:
+        for node in self._nodes.values():
+            if (
+                node.project_id == project_id
+                and node.source_table == source_table
+                and node.source_id == source_id
+            ):
+                return node
+        return None
+
+    async def find_edge(
+        self,
+        project_id: UUID,
+        from_node_id: UUID,
+        to_node_id: UUID,
+        relationship_type: GraphEdgeType,
+    ) -> GraphEdge | None:
+        for edge in self._edges.values():
+            if (
+                edge.project_id == project_id
+                and edge.from_node_id == from_node_id
+                and edge.to_node_id == to_node_id
+                and edge.relationship_type == relationship_type
+            ):
+                return edge
+        return None
+
+    async def get_neighbors(
+        self,
+        node_id: UUID,
+        edge_type: GraphEdgeType | None = None,
+        direction: str = "outgoing",
+    ) -> list[GraphNode]:
+        neighbor_ids: list[UUID] = []
+        for edge in self._edges.values():
+            if (
+                direction == "outgoing"
+                and edge.from_node_id == node_id
+                and (edge_type is None or edge.relationship_type == edge_type)
+            ):
+                neighbor_ids.append(edge.to_node_id)
+            elif (
+                direction == "incoming"
+                and edge.to_node_id == node_id
+                and (edge_type is None or edge.relationship_type == edge_type)
+            ):
+                neighbor_ids.append(edge.from_node_id)
+        return [self._nodes[nid] for nid in neighbor_ids if nid in self._nodes]
+
+    async def shortest_path(
+        self, from_node_id: UUID, to_node_id: UUID, max_depth: int = 10
+    ) -> list[GraphNode] | None:
+        from collections import deque
+
+        if from_node_id == to_node_id:
+            node = self._nodes.get(from_node_id)
+            return [node] if node else None
+
+        visited: set[UUID] = {from_node_id}
+        queue: deque[tuple[UUID, list[UUID]]] = deque([(from_node_id, [from_node_id])])
+
+        while queue:
+            current, path = queue.popleft()
+            if len(path) > max_depth:
+                break
+            for edge in self._edges.values():
+                if edge.from_node_id == current and edge.to_node_id not in visited:
+                    new_path = path + [edge.to_node_id]
+                    if edge.to_node_id == to_node_id:
+                        return [self._nodes[nid] for nid in new_path if nid in self._nodes]
+                    visited.add(edge.to_node_id)
+                    queue.append((edge.to_node_id, new_path))
+        return None
+
+    async def list_nodes_for_project(
+        self,
+        project_id: UUID,
+        node_type: GraphNodeType | None = None,
+    ) -> list[GraphNode]:
+        nodes = [n for n in self._nodes.values() if n.project_id == project_id]
+        if node_type is not None:
+            nodes = [n for n in nodes if n.node_type == node_type]
+        return nodes
+
+    async def list_edges_for_project(
+        self,
+        project_id: UUID,
+        relationship_type: GraphEdgeType | None = None,
+    ) -> list[GraphEdge]:
+        edges = [e for e in self._edges.values() if e.project_id == project_id]
+        if relationship_type is not None:
+            edges = [e for e in edges if e.relationship_type == relationship_type]
+        return edges
+
+    async def remove_node(self, node_id: UUID) -> None:
+        self._edges = {
+            eid: e
+            for eid, e in self._edges.items()
+            if e.from_node_id != node_id and e.to_node_id != node_id
+        }
+        self._nodes.pop(node_id, None)
+
+    async def remove_edge(self, edge_id: UUID) -> None:
+        self._edges.pop(edge_id, None)
+
+    async def remove_edges_for_node(self, node_id: UUID) -> None:
+        self._edges = {
+            eid: e
+            for eid, e in self._edges.items()
+            if e.from_node_id != node_id and e.to_node_id != node_id
+        }
+
+    async def clear_project(self, project_id: UUID) -> None:
+        self._edges = {
+            eid: e for eid, e in self._edges.items() if e.project_id != project_id
+        }
+        self._nodes = {
+            nid: n for nid, n in self._nodes.items() if n.project_id != project_id
+        }

@@ -31,9 +31,12 @@ from app.application.auth_service import (
     RegisterUserService,
 )
 from app.application.authorization_service import AuthorizationRecordService
+from app.application.evidence_service import EvidenceService
 from app.application.finding_service import FindingService
+from app.application.graph_service import GraphService
 from app.application.organization_service import OrganizationService
 from app.application.project_service import ProjectService
+from app.application.report_service import ReportService
 from app.application.scan_service import ScanService, ScanTaskDispatcher
 from app.application.scope_guard_service import ScopeGuardService
 from app.application.target_service import TargetService
@@ -51,7 +54,11 @@ from app.infrastructure.db.repositories.audit_log_repository import SqlAlchemyAu
 from app.infrastructure.db.repositories.authorization_repository import (
     SqlAlchemyAuthorizationRecordRepository,
 )
+from app.infrastructure.db.repositories.evidence_repository import (
+    SqlAlchemyEvidenceRepository,
+)
 from app.infrastructure.db.repositories.finding_repository import SqlAlchemyFindingRepository
+from app.infrastructure.db.repositories.graph_repository import SqlAlchemyGraphRepository
 from app.infrastructure.db.repositories.identity_repository import (
     SqlAlchemySessionRepository,
     SqlAlchemyUserRepository,
@@ -60,6 +67,10 @@ from app.infrastructure.db.repositories.organization_repository import (
     SqlAlchemyOrganizationRepository,
 )
 from app.infrastructure.db.repositories.project_repository import SqlAlchemyProjectRepository
+from app.infrastructure.db.repositories.report_repository import (
+    SqlAlchemyReportRepository,
+    SqlAlchemyReportVersionRepository,
+)
 from app.infrastructure.db.repositories.scan_repository import SqlAlchemyScanRepository
 from app.infrastructure.db.repositories.target_repository import SqlAlchemyTargetRepository
 from app.infrastructure.db.session import get_db_session
@@ -134,6 +145,30 @@ def get_finding_repository(
     session: AsyncSession = Depends(get_db_session),
 ) -> SqlAlchemyFindingRepository:
     return SqlAlchemyFindingRepository(session)
+
+
+def get_evidence_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyEvidenceRepository:
+    return SqlAlchemyEvidenceRepository(session)
+
+
+def get_report_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyReportRepository:
+    return SqlAlchemyReportRepository(session)
+
+
+def get_report_version_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyReportVersionRepository:
+    return SqlAlchemyReportVersionRepository(session)
+
+
+def get_graph_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyGraphRepository:
+    return SqlAlchemyGraphRepository(session)
 
 
 # --- Tier 2: application services --------------------------------------------
@@ -245,15 +280,50 @@ def get_scan_service(
 
 def get_asset_service(
     asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
 ) -> AssetService:
-    return AssetService(asset_repo)
+    return AssetService(asset_repo, GraphService(graph_repo))
 
 
 def get_finding_service(
     finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
     asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
 ) -> FindingService:
-    return FindingService(finding_repo, asset_repo)
+    return FindingService(finding_repo, asset_repo, GraphService(graph_repo))
+
+
+def get_evidence_service(
+    evidence_repo: SqlAlchemyEvidenceRepository = Depends(get_evidence_repository),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    settings: Settings = Depends(get_settings),
+) -> EvidenceService:
+    from app.infrastructure.storage.evidence_store import EvidenceStore
+
+    store = EvidenceStore(str(settings.SCAN_ARTIFACTS_DIR))
+    return EvidenceService(evidence_repo, store, finding_repo)
+
+
+def get_report_service(
+    report_repo: SqlAlchemyReportRepository = Depends(get_report_repository),
+    report_version_repo: SqlAlchemyReportVersionRepository = Depends(
+        get_report_version_repository
+    ),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    settings: Settings = Depends(get_settings),
+) -> ReportService:
+    return ReportService(
+        report_repository=report_repo,
+        report_version_repository=report_version_repo,
+        finding_repository=finding_repo,
+        artifacts_dir=str(settings.SCAN_ARTIFACTS_DIR),
+    )
+
+
+def get_graph_service(
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
+) -> GraphService:
+    return GraphService(graph_repo)
 
 
 # --- Tier 3: authentication + RBAC --------------------------------------------
@@ -540,3 +610,18 @@ def get_client_ip(request: Request) -> str | None:
     if request.client is None:
         return None
     return request.client.host
+
+
+def require_report_view_permission() -> Callable[..., Awaitable[ProjectMember]]:
+    """Permission dependency for report routes keyed by `{report_id}`."""
+
+    async def _checker(
+        report_id: UUID,
+        current_user: User = Depends(get_current_user),
+        report_service: ReportService = Depends(get_report_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        report = await report_service.get(report_id)
+        return await project_service.require_member(report.project_id, current_user.id)
+
+    return _checker

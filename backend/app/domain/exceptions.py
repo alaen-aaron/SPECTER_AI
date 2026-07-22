@@ -198,3 +198,44 @@ class FindingNotFoundError(DomainError):
     def __init__(self, finding_id: UUID) -> None:
         self.finding_id = finding_id
         super().__init__(f"Finding {finding_id} not found.")
+
+
+class EvidenceNotFoundError(DomainError):
+    def __init__(self, evidence_id: UUID) -> None:
+        self.evidence_id = evidence_id
+        super().__init__(f"Evidence {evidence_id} not found.")
+
+
+class EvidenceAttachmentError(DomainError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"Failed to attach evidence: {reason}")
+
+
+# --- Reports (Milestone 5) ---------------------------------------------------
+
+
+class ReportNotFoundError(DomainError):
+    def __init__(self, report_id: UUID) -> None:
+        self.report_id = report_id
+        super().__init__(f"Report {report_id} not found.")
+
+
+class ReportAlreadyFinalizedError(DomainError):
+    def __init__(self, report_id: UUID) -> None:
+        self.report_id = report_id
+        super().__init__(f"Report {report_id} is already finalized.")
+
+
+# --- Knowledge Graph (Milestone 5) -------------------------------------------
+
+
+class GraphNodeNotFoundError(DomainError):
+    def __init__(self, node_id: UUID) -> None:
+        self.node_id = node_id
+        super().__init__(f"Graph node {node_id} not found.")
+
+
+class GraphEdgeNotFoundError(DomainError):
+    def __init__(self, edge_id: UUID) -> None:
+        self.edge_id = edge_id
+        super().__init__(f"Graph edge {edge_id} not found.")

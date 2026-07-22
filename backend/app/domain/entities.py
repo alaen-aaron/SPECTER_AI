@@ -20,11 +20,15 @@ from app.domain.value_objects import (
     VALID_PROJECT_TRANSITIONS,
     AssetType,
     AuthorizationStatus,
+    EvidenceType,
     FindingStatus,
+    GraphEdgeType,
+    GraphNodeType,
     InvitationStatus,
     OrganizationRole,
     ProjectRole,
     ProjectState,
+    ReportStatus,
     ScanStatus,
     Severity,
     TargetType,
@@ -278,4 +282,74 @@ class Finding:
     cvss_score: float | None = None
     dedup_key: str = ""
     tool_result_ids: list[UUID] = field(default_factory=list)
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class Evidence:
+    """An immutable evidence artifact attached to a finding (SRS §2.9).
+    Content-addressed: storage path is derived from content hash."""
+
+    id: UUID
+    finding_id: UUID
+    evidence_type: EvidenceType
+    storage_pointer: str
+    content_hash: str
+    collected_by: UUID
+    collected_at: datetime
+    filename: str | None = None
+    file_size: int | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class Report:
+    id: UUID
+    project_id: UUID
+    title: str
+    status: ReportStatus = ReportStatus.DRAFT
+    created_at: datetime | None = None
+
+    @property
+    def is_final(self) -> bool:
+        return self.status is ReportStatus.FINAL
+
+
+@dataclass(slots=True)
+class ReportVersion:
+    id: UUID
+    report_id: UUID
+    version_number: int
+    file_pointer: str
+    is_redacted: bool
+    generated_by: UUID
+    generated_at: datetime
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class GraphNode:
+    """A node in the project-scoped Knowledge Graph (SRS §15A)."""
+
+    id: UUID
+    project_id: UUID
+    node_type: GraphNodeType
+    source_table: str
+    source_id: UUID
+    label: str
+    properties: dict[str, object] = field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class GraphEdge:
+    """A directed, typed edge in the Knowledge Graph (SRS §15A)."""
+
+    id: UUID
+    project_id: UUID
+    from_node_id: UUID
+    to_node_id: UUID
+    relationship_type: GraphEdgeType
+    weight: float = 1.0
+    properties: dict[str, object] = field(default_factory=dict)
     created_at: datetime | None = None

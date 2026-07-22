@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from app.domain.entities import Asset, ToolResult
@@ -8,10 +9,18 @@ from app.domain.exceptions import AssetNotFoundError
 from app.domain.repositories import AssetRepository
 from app.domain.value_objects import AssetType
 
+if TYPE_CHECKING:
+    from app.application.graph_service import GraphService
+
 
 class AssetService:
-    def __init__(self, asset_repository: AssetRepository) -> None:
+    def __init__(
+        self,
+        asset_repository: AssetRepository,
+        graph_service: GraphService | None = None,
+    ) -> None:
         self._assets = asset_repository
+        self._graph = graph_service
 
     async def list_for_project(
         self,
@@ -64,7 +73,52 @@ class AssetService:
                     if svc_asset is not None:
                         upserted.append(svc_asset)
 
+        if self._graph is not None and upserted:
+            await self._project_assets_to_graph(project_id, upserted)
+
         return upserted
+
+    async def _project_assets_to_graph(
+        self, project_id: UUID, assets: list[Asset]
+    ) -> None:
+        """Create/update graph nodes for assets and wire host→service edges."""
+        assert self._graph is not None
+
+        host_asset_ids: set[UUID] = set()
+        service_assets: list[Asset] = []
+
+        for asset in assets:
+            await self._graph.upsert_asset_node(
+                project_id,
+                asset.id,
+                asset.value,
+                asset_type=asset.asset_type.value,
+            )
+            if asset.asset_type == AssetType.HOST:
+                host_asset_ids.add(asset.id)
+            elif asset.asset_type == AssetType.SERVICE:
+                service_assets.append(asset)
+
+        for svc in service_assets:
+            svc_node = await self._graph.find_node_by_source(
+                project_id, "assets", svc.id
+            )
+            if svc_node is None:
+                continue
+            target_value = svc.value.split("://")[1].split(":")[0] if "://" in svc.value else ""
+            for host_asset in assets:
+                if host_asset.asset_type == AssetType.HOST and host_asset.value == target_value:
+                    host_node = await self._graph.find_node_by_source(
+                        project_id, "assets", host_asset.id
+                    )
+                    if host_node is not None:
+                        await self._graph.add_edge(
+                            project_id,
+                            host_node.id,
+                            svc_node.id,
+                            "hosts",
+                        )
+                        break
 
     async def _upsert_ping_host(
         self,
