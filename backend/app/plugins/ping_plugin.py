@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 import subprocess
 from typing import Any
 
@@ -12,6 +13,8 @@ from app.plugins.base import Plugin, PluginResult
 
 _PING_COUNT = 4
 _PING_DEADLINE_SECONDS = 2
+_PING_DEADLINE_MS = 2000
+_IS_WINDOWS = platform.system() == "Windows"
 
 
 def _looks_like_ip_or_domain(value: str) -> bool:
@@ -54,14 +57,24 @@ class PingPlugin(Plugin):
 
     def execute(self, config: dict[str, Any], timeout_seconds: int) -> PluginResult:
         hostname = str(config["hostname"])
-        command = [
-            "ping",
-            "-c",
-            str(_PING_COUNT),
-            "-W",
-            str(_PING_DEADLINE_SECONDS),
-            hostname,
-        ]
+        if _IS_WINDOWS:
+            command = [
+                "ping",
+                "-n",
+                str(_PING_COUNT),
+                "-w",
+                str(_PING_DEADLINE_MS),
+                hostname,
+            ]
+        else:
+            command = [
+                "ping",
+                "-c",
+                str(_PING_COUNT),
+                "-W",
+                str(_PING_DEADLINE_SECONDS),
+                hostname,
+            ]
 
         try:
             result = subprocess.run(  # noqa: S603 - fixed binary, list args, no shell

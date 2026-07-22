@@ -240,7 +240,10 @@ async def test_get_and_list_and_cancel_lifecycle(setup):
 
         list_response = await client.get(f"/api/v1/projects/{setup['project'].id}/scans")
         assert list_response.status_code == 200
-        assert len(list_response.json()) == 1
+        list_body = list_response.json()
+        assert len(list_body["items"]) == 1
+        assert list_body["next_cursor"] is None
+        assert list_body["items"][0]["id"] == scan_id
 
         cancel_response = await client.delete(f"/api/v1/scans/{scan_id}")
         assert cancel_response.status_code == 200
