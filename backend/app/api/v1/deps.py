@@ -38,8 +38,10 @@ from app.application.organization_service import OrganizationService
 from app.application.project_service import ProjectService
 from app.application.report_service import ReportService
 from app.application.scan_service import ScanService, ScanTaskDispatcher
+from app.application.schedule_service import ScheduleService
 from app.application.scope_guard_service import ScopeGuardService
 from app.application.target_service import TargetService
+from app.application.workflow_service import WorkflowService, WorkflowTaskDispatcher
 from app.core.config import Settings, get_settings
 from app.domain.entities import OrganizationMember, ProjectMember, User
 from app.domain.exceptions import InsufficientPermissionError, NotAProjectMemberError
@@ -48,7 +50,10 @@ from app.domain.value_objects import (
     OrganizationRole,
     ProjectRole,
 )
-from app.infrastructure.celery_app.dispatcher import CeleryScanTaskDispatcher
+from app.infrastructure.celery_app.dispatcher import (
+    CeleryScanTaskDispatcher,
+    CeleryWorkflowTaskDispatcher,
+)
 from app.infrastructure.db.repositories.asset_repository import SqlAlchemyAssetRepository
 from app.infrastructure.db.repositories.audit_log_repository import SqlAlchemyAuditLogRepository
 from app.infrastructure.db.repositories.authorization_repository import (
@@ -73,6 +78,12 @@ from app.infrastructure.db.repositories.report_repository import (
 )
 from app.infrastructure.db.repositories.scan_repository import SqlAlchemyScanRepository
 from app.infrastructure.db.repositories.target_repository import SqlAlchemyTargetRepository
+from app.infrastructure.db.repositories.workflow_repository import (
+    SqlAlchemyScheduleRepository,
+    SqlAlchemyWorkflowExecutionRepository,
+    SqlAlchemyWorkflowRepository,
+    SqlAlchemyWorkflowStepRepository,
+)
 from app.infrastructure.db.session import get_db_session
 from app.infrastructure.security.jwt import (
     InvalidAccessTokenError,
@@ -169,6 +180,30 @@ def get_graph_repository(
     session: AsyncSession = Depends(get_db_session),
 ) -> SqlAlchemyGraphRepository:
     return SqlAlchemyGraphRepository(session)
+
+
+def get_workflow_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyWorkflowRepository:
+    return SqlAlchemyWorkflowRepository(session)
+
+
+def get_workflow_step_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyWorkflowStepRepository:
+    return SqlAlchemyWorkflowStepRepository(session)
+
+
+def get_workflow_execution_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyWorkflowExecutionRepository:
+    return SqlAlchemyWorkflowExecutionRepository(session)
+
+
+def get_schedule_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyScheduleRepository:
+    return SqlAlchemyScheduleRepository(session)
 
 
 # --- Tier 2: application services --------------------------------------------
@@ -324,6 +359,28 @@ def get_graph_service(
     graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
 ) -> GraphService:
     return GraphService(graph_repo)
+
+
+def get_workflow_task_dispatcher() -> WorkflowTaskDispatcher:
+    return CeleryWorkflowTaskDispatcher()
+
+
+def get_workflow_service(
+    workflow_repo: SqlAlchemyWorkflowRepository = Depends(get_workflow_repository),
+    step_repo: SqlAlchemyWorkflowStepRepository = Depends(get_workflow_step_repository),
+    execution_repo: SqlAlchemyWorkflowExecutionRepository = Depends(
+        get_workflow_execution_repository
+    ),
+    dispatcher: WorkflowTaskDispatcher = Depends(get_workflow_task_dispatcher),
+) -> WorkflowService:
+    return WorkflowService(workflow_repo, step_repo, execution_repo, dispatcher)
+
+
+def get_schedule_service(
+    schedule_repo: SqlAlchemyScheduleRepository = Depends(get_schedule_repository),
+    workflow_repo: SqlAlchemyWorkflowRepository = Depends(get_workflow_repository),
+) -> ScheduleService:
+    return ScheduleService(schedule_repo, workflow_repo)
 
 
 # --- Tier 3: authentication + RBAC --------------------------------------------

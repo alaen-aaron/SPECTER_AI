@@ -94,3 +94,62 @@ async def _execute_scan(scan_id: UUID) -> None:
             await session.commit()
     finally:
         await engine.dispose()
+
+
+@celery_app.task(name="specter.execute_workflow")
+def execute_workflow_task(execution_id: str) -> None:
+    """Entry point for workflow execution — same sync-bridge pattern as scan tasks."""
+    asyncio.run(_execute_workflow(UUID(execution_id)))
+
+
+async def _execute_workflow(execution_id: UUID) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import app.plugins.builtin  # noqa: F401
+    import app.plugins.normalizers  # noqa: F401
+    from app.application.correlation_service import CorrelationService
+    from app.application.workflow_executor import WorkflowExecutor
+    from app.core.config import get_settings
+    from app.infrastructure.db.repositories.finding_repository import (
+        SqlAlchemyFindingRepository,
+    )
+    from app.infrastructure.db.repositories.scan_repository import (
+        SqlAlchemyScanRepository,
+    )
+    from app.infrastructure.db.repositories.tool_result_repository import (
+        SqlAlchemyToolResultRepository,
+    )
+    from app.infrastructure.db.repositories.workflow_repository import (
+        SqlAlchemyWorkflowExecutionRepository,
+        SqlAlchemyWorkflowStepRepository,
+    )
+    from app.plugins.manager import PluginManager
+    from app.plugins.normalizer_registry import normalizer_registry
+    from app.plugins.registry import registry
+
+    settings = get_settings()
+    engine = create_async_engine(str(settings.DATABASE_URL))
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            executor = WorkflowExecutor(
+                plugin_manager=PluginManager(registry),
+                normalizer_registry=normalizer_registry,
+                execution_repository=SqlAlchemyWorkflowExecutionRepository(session),
+                step_repository=SqlAlchemyWorkflowStepRepository(session),
+                scan_repository=SqlAlchemyScanRepository(session),
+                tool_result_repository=SqlAlchemyToolResultRepository(session),
+                correlation_service=CorrelationService(
+                    SqlAlchemyFindingRepository(session)
+                ),
+                default_timeout_seconds=settings.SCAN_DEFAULT_TIMEOUT_SECONDS,
+            )
+            try:
+                await executor.execute(execution_id)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        await engine.dispose()

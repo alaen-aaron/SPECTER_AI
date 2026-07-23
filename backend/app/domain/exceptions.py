@@ -239,3 +239,72 @@ class GraphEdgeNotFoundError(DomainError):
     def __init__(self, edge_id: UUID) -> None:
         self.edge_id = edge_id
         super().__init__(f"Graph edge {edge_id} not found.")
+
+
+# --- Workflows (Phase 2/3) ------------------------------------------------
+
+
+class WorkflowNotFoundError(DomainError):
+    def __init__(self, workflow_id: UUID) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(f"Workflow {workflow_id} not found.")
+
+
+class WorkflowEmptyError(DomainError):
+    def __init__(self, workflow_id: UUID) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(
+            f"Cannot activate workflow {workflow_id}: workflow has no steps."
+        )
+
+
+class WorkflowHasCyclesError(DomainError):
+    def __init__(self, cycle_path: str) -> None:
+        self.cycle_path = cycle_path
+        super().__init__(f"Workflow contains a dependency cycle: {cycle_path}")
+
+
+class WorkflowNotExecutableError(DomainError):
+    def __init__(self, workflow_id: UUID, status: str) -> None:
+        self.workflow_id = workflow_id
+        self.status = status
+        super().__init__(
+            f"Workflow {workflow_id} cannot be executed from status '{status}'; "
+            "must be 'active'."
+        )
+
+
+class WorkflowStepDependencyError(DomainError):
+    def __init__(self, step_id: UUID, missing_dep: UUID) -> None:
+        self.step_id = step_id
+        self.missing_dep = missing_dep
+        super().__init__(
+            f"Step {step_id} depends on unknown step {missing_dep}."
+        )
+
+
+class WorkflowExecutionNotFoundError(DomainError):
+    def __init__(self, execution_id: UUID) -> None:
+        self.execution_id = execution_id
+        super().__init__(f"Workflow execution {execution_id} not found.")
+
+
+class WorkflowExecutionNotCancellableError(DomainError):
+    def __init__(self, execution_id: UUID, current_status: str) -> None:
+        self.execution_id = execution_id
+        self.current_status = current_status
+        super().__init__(
+            f"Workflow execution {execution_id} cannot be cancelled from "
+            f"status '{current_status}'."
+        )
+
+
+class ScheduleNotFoundError(DomainError):
+    def __init__(self, schedule_id: UUID) -> None:
+        self.schedule_id = schedule_id
+        super().__init__(f"Schedule {schedule_id} not found.")
+
+
+class InvalidScheduleConfigError(DomainError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"Invalid schedule configuration: {reason}")

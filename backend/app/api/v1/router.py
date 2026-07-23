@@ -21,7 +21,9 @@ from app.api.v1.routers import (
     projects,
     reports,
     scans,
+    schedules,
     targets,
+    workflows,
 )
 
 api_v1_router = APIRouter()
@@ -37,3 +39,5 @@ api_v1_router.include_router(findings.router)
 api_v1_router.include_router(evidence.router)
 api_v1_router.include_router(reports.router)
 api_v1_router.include_router(graph.router)
+api_v1_router.include_router(workflows.router)
+api_v1_router.include_router(schedules.router)

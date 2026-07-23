@@ -30,8 +30,11 @@ from app.domain.value_objects import (
     ProjectState,
     ReportStatus,
     ScanStatus,
+    ScheduleFrequency,
     Severity,
     TargetType,
+    WorkflowStatus,
+    WorkflowStepType,
 )
 
 
@@ -352,4 +355,102 @@ class GraphEdge:
     relationship_type: GraphEdgeType
     weight: float = 1.0
     properties: dict[str, object] = field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+# --- Workflow (Phase 2/3) -------------------------------------------------
+
+
+@dataclass(slots=True)
+class Workflow:
+    """
+    A named, ordered chain of steps executed within a project.
+
+    A Workflow is a DAG: each step declares its dependencies (step_ids
+    it must wait for), and the executor topologically sorts before
+    running. Cycles are rejected at validation time.
+    """
+
+    id: UUID
+    project_id: UUID
+    name: str
+    description: str | None
+    status: WorkflowStatus = WorkflowStatus.DRAFT
+    created_by: UUID | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def is_executable(self) -> bool:
+        return self.status is WorkflowStatus.ACTIVE
+
+
+@dataclass(slots=True)
+class WorkflowStep:
+    """
+    A single action within a Workflow DAG.
+
+    Each step targets one plugin and optionally declares:
+    - `depends_on`: list of WorkflowStep IDs that must complete first
+    - `condition`: optional gate that must evaluate to True before this
+      step runs (e.g., "only if previous step found open ports")
+    """
+
+    id: UUID
+    workflow_id: UUID
+    step_type: WorkflowStepType
+    plugin: str
+    name: str
+    plugin_config: dict[str, object] = field(default_factory=dict)
+    depends_on: list[UUID] = field(default_factory=list)
+    condition: dict[str, object] | None = None
+    timeout_seconds: int = 120
+    max_retries: int = 0
+    order: int = 0
+
+    @property
+    def has_condition(self) -> bool:
+        return self.condition is not None
+
+
+@dataclass(slots=True)
+class WorkflowExecution:
+    """
+    A single run of a Workflow — analogous to a Scan being a single
+    run of a plugin. Tracks overall status and start/end times.
+    """
+
+    id: UUID
+    workflow_id: UUID
+    project_id: UUID
+    initiated_by: UUID
+    status: ScanStatus = ScanStatus.QUEUED
+    step_results: dict[str, dict[str, object]] = field(default_factory=dict)
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in SCAN_TERMINAL_STATUSES
+
+    @property
+    def is_cancellable(self) -> bool:
+        return self.status in SCAN_CANCELLABLE_STATUSES
+
+
+@dataclass(slots=True)
+class Schedule:
+    """A recurring or one-shot trigger for a Workflow (Celery Beat)."""
+
+    id: UUID
+    workflow_id: UUID
+    project_id: UUID
+    frequency: ScheduleFrequency
+    cron_expression: str | None = None
+    is_active: bool = True
+    last_run_at: datetime | None = None
+    next_run_at: datetime | None = None
+    created_by: UUID | None = None
     created_at: datetime | None = None

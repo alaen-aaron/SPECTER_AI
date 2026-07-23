@@ -30,6 +30,7 @@ from app.domain.exceptions import (
     InvalidPluginConfigError,
     InvalidProjectStateTransitionError,
     InvalidRefreshTokenError,
+    InvalidScheduleConfigError,
     InvalidTargetValueError,
     NoActiveAuthorizationError,
     NotAnOrganizationMemberError,
@@ -44,7 +45,15 @@ from app.domain.exceptions import (
     ReportNotFoundError,
     ScanNotCancellableError,
     ScanNotFoundError,
+    ScheduleNotFoundError,
     TargetNotFoundError,
+    WorkflowEmptyError,
+    WorkflowExecutionNotCancellableError,
+    WorkflowExecutionNotFoundError,
+    WorkflowHasCyclesError,
+    WorkflowNotExecutableError,
+    WorkflowNotFoundError,
+    WorkflowStepDependencyError,
 )
 
 _PROBLEM_BASE_URL = "https://specter.ai/errors"
@@ -82,6 +91,15 @@ _EXCEPTION_MAP: dict[type[DomainError], tuple[int, str]] = {
     ReportAlreadyFinalizedError: (409, "report-already-finalized"),
     GraphNodeNotFoundError: (404, "graph-node-not-found"),
     GraphEdgeNotFoundError: (404, "graph-edge-not-found"),
+    WorkflowNotFoundError: (404, "workflow-not-found"),
+    WorkflowEmptyError: (422, "workflow-empty"),
+    WorkflowHasCyclesError: (422, "workflow-has-cycles"),
+    WorkflowNotExecutableError: (409, "workflow-not-executable"),
+    WorkflowStepDependencyError: (422, "workflow-step-dependency-error"),
+    WorkflowExecutionNotFoundError: (404, "workflow-execution-not-found"),
+    WorkflowExecutionNotCancellableError: (409, "workflow-execution-not-cancellable"),
+    ScheduleNotFoundError: (404, "schedule-not-found"),
+    InvalidScheduleConfigError: (422, "invalid-schedule-config"),
 }
 
 _DEFAULT_STATUS_AND_SLUG = (400, "domain-error")

@@ -36,10 +36,14 @@ from app.domain.entities import (
     Report,
     ReportVersion,
     Scan,
+    Schedule,
     Session,
     Target,
     ToolResult,
     User,
+    Workflow,
+    WorkflowExecution,
+    WorkflowStep,
 )
 from app.domain.value_objects import (
     AssetType,
@@ -669,3 +673,129 @@ class FakeGraphRepository:
         self._nodes = {
             nid: n for nid, n in self._nodes.items() if n.project_id != project_id
         }
+
+
+class FakeWorkflowRepository:
+    def __init__(self) -> None:
+        self._workflows: dict[UUID, Workflow] = {}
+
+    async def create(self, workflow: Workflow) -> None:
+        self._workflows[workflow.id] = workflow
+
+    async def get(self, workflow_id: UUID) -> Workflow | None:
+        return self._workflows.get(workflow_id)
+
+    async def list_for_project(self, project_id: UUID) -> list[Workflow]:
+        return sorted(
+            [w for w in self._workflows.values() if w.project_id == project_id],
+            key=lambda w: w.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+    async def update(self, workflow: Workflow) -> None:
+        self._workflows[workflow.id] = workflow
+
+    async def delete(self, workflow_id: UUID) -> None:
+        self._workflows.pop(workflow_id, None)
+
+
+class FakeWorkflowStepRepository:
+    def __init__(self) -> None:
+        self._steps: dict[UUID, WorkflowStep] = {}
+
+    async def add(self, step: WorkflowStep) -> None:
+        self._steps[step.id] = step
+
+    async def get(self, step_id: UUID) -> WorkflowStep | None:
+        return self._steps.get(step_id)
+
+    async def list_for_workflow(self, workflow_id: UUID) -> list[WorkflowStep]:
+        return sorted(
+            [s for s in self._steps.values() if s.workflow_id == workflow_id],
+            key=lambda s: s.order,
+        )
+
+    async def update(self, step: WorkflowStep) -> None:
+        self._steps[step.id] = step
+
+    async def delete(self, step_id: UUID) -> None:
+        self._steps.pop(step_id, None)
+
+    async def delete_for_workflow(self, workflow_id: UUID) -> None:
+        self._steps = {
+            sid: s for sid, s in self._steps.items() if s.workflow_id != workflow_id
+        }
+
+
+class FakeWorkflowExecutionRepository:
+    def __init__(self) -> None:
+        self._executions: dict[UUID, WorkflowExecution] = {}
+
+    async def create(self, execution: WorkflowExecution) -> None:
+        self._executions[execution.id] = execution
+
+    async def get(self, execution_id: UUID) -> WorkflowExecution | None:
+        return self._executions.get(execution_id)
+
+    async def list_for_workflow(self, workflow_id: UUID) -> list[WorkflowExecution]:
+        return sorted(
+            [e for e in self._executions.values() if e.workflow_id == workflow_id],
+            key=lambda e: e.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+    async def list_for_project(self, project_id: UUID) -> list[WorkflowExecution]:
+        return sorted(
+            [e for e in self._executions.values() if e.project_id == project_id],
+            key=lambda e: e.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+    async def update_status(self, execution_id: UUID, status: ScanStatus) -> None:
+        execution = self._executions.get(execution_id)
+        if execution is not None:
+            execution.status = status
+            if status is ScanStatus.RUNNING:
+                execution.started_at = datetime.now(UTC)
+            elif status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
+                execution.completed_at = datetime.now(UTC)
+
+    async def set_step_result(
+        self,
+        execution_id: UUID,
+        step_id: str,
+        result: dict[str, object],
+    ) -> None:
+        execution = self._executions.get(execution_id)
+        if execution is not None:
+            execution.step_results[step_id] = result
+
+
+class FakeScheduleRepository:
+    def __init__(self) -> None:
+        self._schedules: dict[UUID, Schedule] = {}
+
+    async def create(self, schedule: Schedule) -> None:
+        self._schedules[schedule.id] = schedule
+
+    async def get(self, schedule_id: UUID) -> Schedule | None:
+        return self._schedules.get(schedule_id)
+
+    async def list_for_project(self, project_id: UUID) -> list[Schedule]:
+        return sorted(
+            [s for s in self._schedules.values() if s.project_id == project_id],
+            key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+    async def list_active(self) -> list[Schedule]:
+        return sorted(
+            [s for s in self._schedules.values() if s.is_active],
+            key=lambda s: s.next_run_at or datetime.max.replace(tzinfo=UTC),
+        )
+
+    async def update(self, schedule: Schedule) -> None:
+        self._schedules[schedule.id] = schedule
+
+    async def delete(self, schedule_id: UUID) -> None:
+        self._schedules.pop(schedule_id, None)

@@ -27,6 +27,12 @@ from app.infrastructure.db.models.report import ReportModel, ReportVersionModel
 from app.infrastructure.db.models.scan import ScanModel
 from app.infrastructure.db.models.target import TargetModel
 from app.infrastructure.db.models.tool_result import ToolResultModel
+from app.infrastructure.db.models.workflow import (
+    ScheduleModel,
+    WorkflowExecutionModel,
+    WorkflowModel,
+    WorkflowStepModel,
+)
 
 __all__ = [
     "AssetModel",
@@ -43,10 +49,14 @@ __all__ = [
     "ReportModel",
     "ReportVersionModel",
     "ScanModel",
+    "ScheduleModel",
     "TargetModel",
     "ToolResultModel",
     "FindingModel",
     "finding_tool_results",
     "GraphNodeModel",
     "GraphEdgeModel",
+    "WorkflowModel",
+    "WorkflowStepModel",
+    "WorkflowExecutionModel",
 ]

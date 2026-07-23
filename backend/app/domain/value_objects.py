@@ -174,3 +174,49 @@ class GraphEdgeType(str, Enum):
     DERIVED_FROM = "derived_from"
     COMMUNICATES_WITH = "communicates_with"
     EVIDENCED_BY = "evidenced_by"
+
+
+class WorkflowStatus(str, Enum):
+    """Workflow lifecycle state."""
+
+    DRAFT = "draft"
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+WORKFLOW_TERMINAL_STATUSES = frozenset({WorkflowStatus.ARCHIVED})
+
+
+class WorkflowStepType(str, Enum):
+    """Type of action a workflow step performs."""
+
+    SCAN = "scan"
+    CORRELATE = "correlate"
+
+
+class ConditionOperator(str, Enum):
+    """Operators for conditional step execution."""
+
+    EQUALS = "equals"
+    NOT_EQUALS = "not_equals"
+    EXISTS = "exists"
+    GREATER_THAN = "greater_than"
+    LESS_THAN = "less_than"
+
+
+class ScheduleFrequency(str, Enum):
+    """How often a scheduled workflow runs."""
+
+    ONCE = "once"
+    HOURLY = "hourly"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
+class ScheduleStatus(str, Enum):
+    """Schedule lifecycle state."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"

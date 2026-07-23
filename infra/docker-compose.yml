@@ -62,7 +62,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       OBJECT_STORAGE_ENDPOINT: http://minio:9000
     ports:
-      - "8000:8000"
+      - "9002:8000"
     volumes:
       - ../backend/app:/app/app
       - scan_artifacts:/tmp/specter-artifacts
