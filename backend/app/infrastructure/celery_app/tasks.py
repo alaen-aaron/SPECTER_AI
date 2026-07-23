@@ -102,6 +102,17 @@ def execute_workflow_task(execution_id: str) -> None:
     asyncio.run(_execute_workflow(UUID(execution_id)))
 
 
+@celery_app.task(name="specter.tick_schedules")
+def tick_schedules_task() -> None:
+    """Periodic task invoked by Celery Beat.
+
+    Polls for active schedules whose ``next_run_at <= now()``,
+    creates a WorkflowExecution for each, dispatches execution,
+    and advances (or deactivates) the schedule.
+    """
+    asyncio.run(_tick_schedules())
+
+
 async def _execute_workflow(execution_id: UUID) -> None:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -151,5 +162,60 @@ async def _execute_workflow(execution_id: UUID) -> None:
             except Exception:
                 await session.rollback()
                 raise
+    finally:
+        await engine.dispose()
+
+
+async def _tick_schedules() -> None:
+    """Poll due schedules and dispatch workflow executions."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.application.schedule_service import ScheduleService
+    from app.application.workflow_service import WorkflowService
+    from app.core.config import get_settings
+    from app.infrastructure.celery_app.dispatcher import (
+        CeleryWorkflowTaskDispatcher,
+    )
+    from app.infrastructure.db.repositories.workflow_repository import (
+        SqlAlchemyScheduleRepository,
+        SqlAlchemyWorkflowExecutionRepository,
+        SqlAlchemyWorkflowRepository,
+        SqlAlchemyWorkflowStepRepository,
+    )
+
+    settings = get_settings()
+    engine = create_async_engine(str(settings.DATABASE_URL))
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            schedule_repo = SqlAlchemyScheduleRepository(session)
+            workflow_repo = SqlAlchemyWorkflowRepository(session)
+            execution_repo = SqlAlchemyWorkflowExecutionRepository(session)
+
+            schedule_service = ScheduleService(schedule_repo, workflow_repo)
+            workflow_service = WorkflowService(
+                workflow_repository=workflow_repo,
+                step_repository=SqlAlchemyWorkflowStepRepository(session),
+                execution_repository=execution_repo,
+                task_dispatcher=CeleryWorkflowTaskDispatcher(),
+            )
+
+            now = datetime.now(UTC)
+            due_schedules = await schedule_repo.list_due(now)
+
+            for schedule in due_schedules:
+                try:
+                    await workflow_service.execute(
+                        schedule.workflow_id,
+                        schedule.created_by or schedule.project_id,
+                    )
+                    await schedule_service.mark_run(schedule.id)
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    continue
     finally:
         await engine.dispose()

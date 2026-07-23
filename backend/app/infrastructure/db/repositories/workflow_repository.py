@@ -5,6 +5,7 @@ repositories (Phase 2/3).
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import delete, select, update
@@ -317,6 +318,30 @@ class SqlAlchemyScheduleRepository:
         stmt = (
             select(ScheduleModel)
             .where(ScheduleModel.is_active == True)  # noqa: E712
+            .order_by(ScheduleModel.next_run_at)
+        )
+        result = await self._session.execute(stmt)
+        schedules: list[Schedule] = []
+        for row in result.scalars().all():
+            schedules.append(Schedule(
+                id=row.id,
+                workflow_id=row.workflow_id,
+                project_id=row.project_id,
+                frequency=ScheduleFrequency(row.frequency),
+                cron_expression=row.cron_expression,
+                is_active=row.is_active,
+                last_run_at=row.last_run_at,
+                next_run_at=row.next_run_at,
+                created_by=row.created_by,
+                created_at=row.created_at,
+            ))
+        return schedules
+
+    async def list_due(self, now: datetime) -> list[Schedule]:
+        stmt = (
+            select(ScheduleModel)
+            .where(ScheduleModel.is_active == True)  # noqa: E712
+            .where(ScheduleModel.next_run_at <= now)
             .order_by(ScheduleModel.next_run_at)
         )
         result = await self._session.execute(stmt)

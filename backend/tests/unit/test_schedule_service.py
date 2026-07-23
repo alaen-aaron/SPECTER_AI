@@ -156,3 +156,57 @@ async def test_schedule_not_found():
     service = ScheduleService(FakeScheduleRepository(), FakeWorkflowRepository())
     with pytest.raises(ScheduleNotFoundError):
         await service.get(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_list_due_returns_only_due_schedules():
+    from datetime import UTC, datetime, timedelta
+
+    sched_repo = FakeScheduleRepository()
+    wf_repo = FakeWorkflowRepository()
+    service = ScheduleService(sched_repo, wf_repo)
+
+    wf = _make_active_workflow()
+    await wf_repo.create(wf)
+
+    sched1 = await service.create(
+        wf.id, wf.project_id, ScheduleFrequency.ONCE, created_by=uuid4()
+    )
+    sched2 = await service.create(
+        wf.id, wf.project_id, ScheduleFrequency.ONCE, created_by=uuid4()
+    )
+
+    # sched1 is due (next_run_at in the past), sched2 is not yet due
+    sched1.next_run_at = datetime.now(UTC) - timedelta(hours=1)
+    await sched_repo.update(sched1)
+    sched2.next_run_at = datetime.now(UTC) + timedelta(hours=1)
+    await sched_repo.update(sched2)
+
+    due = await sched_repo.list_due(datetime.now(UTC))
+    due_ids = {s.id for s in due}
+    assert sched1.id in due_ids
+    assert sched2.id not in due_ids
+
+
+@pytest.mark.asyncio
+async def test_list_due_excludes_inactive_schedules():
+    from datetime import UTC, datetime, timedelta
+
+    sched_repo = FakeScheduleRepository()
+    wf_repo = FakeWorkflowRepository()
+    service = ScheduleService(sched_repo, wf_repo)
+
+    wf = _make_active_workflow()
+    await wf_repo.create(wf)
+
+    sched = await service.create(
+        wf.id, wf.project_id, ScheduleFrequency.ONCE, created_by=uuid4()
+    )
+    sched.next_run_at = datetime.now(UTC) - timedelta(hours=1)
+    await sched_repo.update(sched)
+
+    # deactivate it
+    await service.pause(sched.id)
+
+    due = await sched_repo.list_due(datetime.now(UTC))
+    assert all(s.id != sched.id for s in due)

@@ -794,6 +794,15 @@ class FakeScheduleRepository:
             key=lambda s: s.next_run_at or datetime.max.replace(tzinfo=UTC),
         )
 
+    async def list_due(self, now: datetime) -> list[Schedule]:
+        return sorted(
+            [
+                s for s in self._schedules.values()
+                if s.is_active and s.next_run_at is not None and s.next_run_at <= now
+            ],
+            key=lambda s: s.next_run_at or datetime.max.replace(tzinfo=UTC),
+        )
+
     async def update(self, schedule: Schedule) -> None:
         self._schedules[schedule.id] = schedule
 
