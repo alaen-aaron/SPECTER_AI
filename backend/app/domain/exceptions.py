@@ -59,8 +59,17 @@ class NotAnOrganizationMemberError(DomainError):
 
 class NotAProjectMemberError(DomainError):
     def __init__(self, project_id: UUID) -> None:
+        super().__init__(f"User is not a member of project {project_id}")
         self.project_id = project_id
-        super().__init__(f"User is not a member of project {project_id}.")
+
+
+class ProjectMemberAlreadyExistsError(DomainError):
+    def __init__(self, project_id: UUID, user_id: UUID) -> None:
+        super().__init__(
+            f"User {user_id} is already a member of project {project_id}"
+        )
+        self.project_id = project_id
+        self.user_id = user_id
 
 
 # --- Not found ---------------------------------------------------------------
@@ -308,3 +317,65 @@ class ScheduleNotFoundError(DomainError):
 class InvalidScheduleConfigError(DomainError):
     def __init__(self, reason: str) -> None:
         super().__init__(f"Invalid schedule configuration: {reason}")
+
+
+# --- AI Decision Engine (Phase 4, SRS §8) -----------------------------------
+
+
+class PlannedActionNotFoundError(DomainError):
+    def __init__(self, action_id: UUID) -> None:
+        self.action_id = action_id
+        super().__init__(f"Planned action {action_id} not found.")
+
+
+class PlannedActionNotApprovableError(DomainError):
+    def __init__(self, action_id: UUID, status: str) -> None:
+        self.action_id = action_id
+        self.status = status
+        super().__init__(
+            f"Planned action {action_id} cannot be approved from status '{status}'; "
+            "must be 'pending_review'."
+        )
+
+
+class PlannedActionExpiredError(DomainError):
+    def __init__(self, action_id: UUID) -> None:
+        self.action_id = action_id
+        super().__init__(f"Planned action {action_id} has expired.")
+
+
+class RiskScoreNotFoundError(DomainError):
+    def __init__(self, score_id: UUID) -> None:
+        self.score_id = score_id
+        super().__init__(f"Risk score {score_id} not found.")
+
+
+class RiskScoreAlreadyExistsError(DomainError):
+    def __init__(self, finding_id: UUID) -> None:
+        self.finding_id = finding_id
+        super().__init__(f"Risk score already exists for finding {finding_id}.")
+
+
+class PromptTemplateNotFoundError(DomainError):
+    def __init__(self, template_id: UUID) -> None:
+        self.template_id = template_id
+        super().__init__(f"Prompt template {template_id} not found.")
+
+
+class PromptTemplateInactiveError(DomainError):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"No active prompt template found with name '{name}'.")
+
+
+class LLMProviderError(DomainError):
+    def __init__(self, provider: str, reason: str) -> None:
+        self.provider = provider
+        self.reason = reason
+        super().__init__(f"LLM provider '{provider}' failed: {reason}")
+
+
+class AIContextMemoryNotFoundError(DomainError):
+    def __init__(self, memory_id: UUID) -> None:
+        self.memory_id = memory_id
+        super().__init__(f"AI context memory {memory_id} not found.")

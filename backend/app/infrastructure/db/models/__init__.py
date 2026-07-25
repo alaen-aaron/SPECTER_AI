@@ -10,6 +10,12 @@ every migration would generate a "drop everything" diff.
 
 from __future__ import annotations
 
+from app.infrastructure.db.models.ai_engine import (
+    AIContextMemoryModel,
+    PlannedActionModel,
+    PromptTemplateModel,
+    RiskScoreModel,
+)
 from app.infrastructure.db.models.asset import AssetModel
 from app.infrastructure.db.models.audit_log import AuditLogModel
 from app.infrastructure.db.models.authorization import AuthorizationRecordModel
@@ -35,10 +41,14 @@ from app.infrastructure.db.models.workflow import (
 )
 
 __all__ = [
+    "AIContextMemoryModel",
     "AssetModel",
     "AuditLogModel",
     "AuthorizationRecordModel",
     "EvidenceModel",
+    "PlannedActionModel",
+    "PromptTemplateModel",
+    "RiskScoreModel",
     "SessionModel",
     "UserModel",
     "OrganizationInvitationModel",

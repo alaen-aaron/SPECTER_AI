@@ -808,3 +808,123 @@ class FakeScheduleRepository:
 
     async def delete(self, schedule_id: UUID) -> None:
         self._schedules.pop(schedule_id, None)
+
+
+# --- AI Decision Engine fakes (Phase 4) -------------------------------------
+
+
+class FakePlannedActionRepository:
+    def __init__(self) -> None:
+        self._actions: dict[UUID, object] = {}
+
+    async def create(self, action: object) -> None:
+        self._actions[action.id] = action
+
+    async def get(self, action_id: UUID) -> object | None:
+        return self._actions.get(action_id)
+
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        status: object | None = None,
+        limit: int = 20,
+        cursor: datetime | None = None,
+    ) -> list[object]:
+        results = [
+            a for a in self._actions.values()
+            if a.project_id == project_id
+            and (status is None or a.status == status)
+        ]
+        return sorted(
+            results,
+            key=lambda a: a.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )[:limit]
+
+    async def update(self, action: object) -> None:
+        self._actions[action.id] = action
+
+
+class FakeRiskScoreRepository:
+    def __init__(self) -> None:
+        self._scores: dict[UUID, object] = {}
+
+    async def create(self, score: object) -> None:
+        self._scores[score.id] = score
+
+    async def get(self, score_id: UUID) -> object | None:
+        return self._scores.get(score_id)
+
+    async def get_by_finding(self, finding_id: UUID) -> object | None:
+        for score in self._scores.values():
+            if score.finding_id == finding_id:
+                return score
+        return None
+
+    async def list_for_project(self, project_id: UUID) -> list[object]:
+        return list(self._scores.values())
+
+    async def update(self, score: object) -> None:
+        self._scores[score.id] = score
+
+
+class FakePromptTemplateRepository:
+    def __init__(self) -> None:
+        self._templates: dict[UUID, object] = {}
+
+    async def create(self, template: object) -> None:
+        self._templates[template.id] = template
+
+    async def get(self, template_id: UUID) -> object | None:
+        return self._templates.get(template_id)
+
+    async def get_active_by_name(self, name: str) -> object | None:
+        candidates = [
+            t for t in self._templates.values()
+            if t.name == name and t.is_active
+        ]
+        if candidates:
+            return max(candidates, key=lambda t: t.version)
+        return None
+
+    async def list_all(self) -> list[object]:
+        return sorted(
+            self._templates.values(),
+            key=lambda t: (t.name, -t.version),
+        )
+
+    async def update(self, template: object) -> None:
+        self._templates[template.id] = template
+
+    async def delete(self, template_id: UUID) -> None:
+        self._templates.pop(template_id, None)
+
+
+class FakeAIContextMemoryRepository:
+    def __init__(self) -> None:
+        self._memories: dict[UUID, object] = {}
+
+    async def add(self, memory: object) -> None:
+        self._memories[memory.id] = memory
+
+    async def list_for_project(self, project_id: UUID) -> list[object]:
+        return sorted(
+            [m for m in self._memories.values() if m.project_id == project_id],
+            key=lambda m: m.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+    async def list_for_project_by_type(
+        self, project_id: UUID, memory_type: str
+    ) -> list[object]:
+        return sorted(
+            [
+                m for m in self._memories.values()
+                if m.project_id == project_id and m.memory_type == memory_type
+            ],
+            key=lambda m: m.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+    async def delete(self, memory_id: UUID) -> None:
+        self._memories.pop(memory_id, None)

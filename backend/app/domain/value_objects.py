@@ -220,3 +220,31 @@ class ScheduleStatus(str, Enum):
     PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+# --- AI Decision Engine (Phase 4, SRS §8) -----------------------------------
+
+
+class PlannedActionStatus(str, Enum):
+    """Lifecycle state for a planner-suggested action (SRS §8.4)."""
+
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXECUTED = "executed"
+    EXPIRED = "expired"
+
+
+class AIOutputReviewStatus(str, Enum):
+    """Human-review state for any AI-generated content (SRS FR-7.6)."""
+
+    AI_DRAFTED = "ai_drafted"
+    HUMAN_REVIEWED = "human_reviewed"
+    HUMAN_APPROVED = "human_approved"
+
+
+class RiskScoreSource(str, Enum):
+    """Whether a risk score is purely computed or has AI rationale layered on top."""
+
+    COMPUTED = "computed"
+    AI_RATIONALE = "ai_rationale"

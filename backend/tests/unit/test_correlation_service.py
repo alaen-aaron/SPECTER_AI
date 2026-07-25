@@ -62,7 +62,8 @@ async def test_correlate_nmap_insecure_service():
 
 
 @pytest.mark.asyncio
-async def test_correlate_nmap_skips_secure_services():
+async def test_correlate_nmap_secure_service_creates_info_finding():
+    """Non-insecure services now produce INFO-severity 'Open port' findings."""
     findings_repo = FakeFindingRepository()
     service = CorrelationService(findings_repo)
 
@@ -84,7 +85,103 @@ async def test_correlate_nmap_skips_secure_services():
     )
 
     created = await service.correlate(pid, [tr])
-    assert len(created) == 0
+    assert len(created) == 1
+    assert created[0].severity.value == "info"
+    assert "Open port" in created[0].title
+    assert "ssh" in created[0].title
+    assert created[0].dedup_key != ""
+
+
+@pytest.mark.asyncio
+async def test_correlate_nmap_mixed_services():
+    """Insecure services get elevated severity; others get INFO."""
+    findings_repo = FakeFindingRepository()
+    service = CorrelationService(findings_repo)
+
+    pid = uuid4()
+    tr = ToolResult(
+        id=uuid4(),
+        scan_id=uuid4(),
+        plugin="nmap",
+        target="10.0.0.1",
+        normalized_payload={
+            "target": "10.0.0.1",
+            "ports": [
+                {
+                    "port": 23, "state": "open",
+                    "service": "telnet", "protocol": "tcp",
+                    "version": "",
+                },
+                {
+                    "port": 22, "state": "open",
+                    "service": "ssh", "protocol": "tcp",
+                    "version": "OpenSSH",
+                },
+                {
+                    "port": 80, "state": "open",
+                    "service": "http", "protocol": "tcp",
+                    "version": "nginx",
+                },
+            ],
+        },
+    )
+
+    created = await service.correlate(pid, [tr])
+    assert len(created) == 3
+    by_port = {
+        f.title.split(":")[-1].strip().split(" ")[0]: f for f in created
+    }
+    assert by_port["23"].severity.value == "medium"  # telnet → insecure
+    assert by_port["22"].severity.value == "info"    # ssh → open port
+    assert by_port["80"].severity.value == "info"    # http → open port
+
+
+@pytest.mark.asyncio
+async def test_correlate_nmap_open_port_dedup():
+    """Open-port findings deduplicate across scans."""
+    findings_repo = FakeFindingRepository()
+    service = CorrelationService(findings_repo)
+
+    pid = uuid4()
+    tr1 = ToolResult(
+        id=uuid4(),
+        scan_id=uuid4(),
+        plugin="nmap",
+        target="10.0.0.1",
+        normalized_payload={
+            "target": "10.0.0.1",
+            "ports": [
+                {
+                    "port": 443, "state": "open",
+                    "service": "https", "protocol": "tcp",
+                    "version": "",
+                },
+            ],
+        },
+    )
+    tr2 = ToolResult(
+        id=uuid4(),
+        scan_id=uuid4(),
+        plugin="nmap",
+        target="10.0.0.1",
+        normalized_payload={
+            "target": "10.0.0.1",
+            "ports": [
+                {
+                    "port": 443, "state": "open",
+                    "service": "https", "protocol": "tcp",
+                    "version": "",
+                },
+            ],
+        },
+    )
+
+    created1 = await service.correlate(pid, [tr1])
+    assert len(created1) == 1
+
+    created2 = await service.correlate(pid, [tr2])
+    assert len(created2) == 0  # deduplicated
+    assert len(findings_repo._findings) == 1
 
 
 @pytest.mark.asyncio

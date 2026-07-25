@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.v1.routers import (
+    ai_engine,
     assets,
     auth,
     authorization,
@@ -41,3 +42,4 @@ api_v1_router.include_router(reports.router)
 api_v1_router.include_router(graph.router)
 api_v1_router.include_router(workflows.router)
 api_v1_router.include_router(schedules.router)
+api_v1_router.include_router(ai_engine.router)

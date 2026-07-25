@@ -215,6 +215,67 @@ async def test_create_from_non_nmap_returns_empty(repos):
     assert findings == []
 
 
+# ---------------------------------------------------------------------------
+# FindingService.create (manual / API-driven creation)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_finding_persists_and_returns(repos):
+    project_id = uuid4()
+    service = _make_service(repos)
+
+    finding = await service.create(
+        project_id=project_id,
+        title="SQL Injection in /api/login",
+        severity=Severity.HIGH,
+        description="Unparameterised query in auth handler.",
+        cvss_score=8.1,
+        dedup_key="manual:sql-inj-login",
+    )
+
+    assert finding.id is not None
+    assert finding.project_id == project_id
+    assert finding.title == "SQL Injection in /api/login"
+    assert finding.severity is Severity.HIGH
+    assert finding.status is FindingStatus.OPEN
+    assert finding.cvss_score == 8.1
+    assert finding.dedup_key == "manual:sql-inj-login"
+
+    persisted = await service.get(finding.id)
+    assert persisted.id == finding.id
+
+
+@pytest.mark.asyncio
+async def test_create_finding_defaults(repos):
+    project_id = uuid4()
+    service = _make_service(repos)
+
+    finding = await service.create(
+        project_id=project_id,
+        title="Minimal finding",
+        severity=Severity.LOW,
+    )
+
+    assert finding.description is None
+    assert finding.cvss_score is None
+    assert finding.dedup_key == ""
+    assert finding.tool_result_ids == []
+    assert finding.created_at is not None
+
+
+@pytest.mark.asyncio
+async def test_create_finding_appears_in_list(repos):
+    project_id = uuid4()
+    service = _make_service(repos)
+
+    await service.create(project_id=project_id, title="A", severity=Severity.CRITICAL)
+    await service.create(project_id=project_id, title="B", severity=Severity.MEDIUM)
+
+    all_findings = await service.list_for_project(project_id)
+    assert len(all_findings) == 2
+
+
 @pytest.mark.asyncio
 async def test_update_status_changes_finding_status(repos):
     project_id = uuid4()

@@ -252,23 +252,33 @@ class WorkflowExecutor:
                                 )
 
                         # Persist ToolResult referencing the step Scan
-                        await self._tool_results.add(
-                            ToolResult(
-                                id=uuid4(),
-                                scan_id=step_scan_id,
-                                plugin=step.plugin,
-                                target=str(
+                        step_tool_result = ToolResult(
+                            id=uuid4(),
+                            scan_id=step_scan_id,
+                            plugin=step.plugin,
+                            target=str(
+                                step.plugin_config.get(
+                                    "target",
                                     step.plugin_config.get(
-                                        "target",
-                                        step.plugin_config.get(
-                                            "hostname", ""
-                                        ),
-                                    )
-                                ),
-                                normalized_payload=normalized,
-                                created_at=datetime.now(UTC),
-                            )
+                                        "hostname", ""
+                                    ),
+                                )
+                            ),
+                            normalized_payload=normalized,
+                            created_at=datetime.now(UTC),
                         )
+                        await self._tool_results.add(step_tool_result)
+
+                        # Pipeline integration: create Findings from the ToolResult
+                        try:
+                            await self._correlation.correlate(
+                                project_id, [step_tool_result]
+                            )
+                        except Exception:  # noqa: BLE001
+                            log.warning(
+                                "workflow_step_correlation_failed",
+                                step=step.name,
+                            )
 
                         if result.success:
                             await self._scans.complete(

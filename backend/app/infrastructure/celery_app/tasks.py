@@ -39,6 +39,7 @@ async def _execute_scan(scan_id: UUID) -> None:
 
     import app.plugins.builtin  # noqa: F401 - side-effect import, registers built-in plugins
     import app.plugins.normalizers  # noqa: F401 - side-effect import, registers normalizers
+    from app.application.correlation_service import CorrelationService
     from app.application.scope_guard_service import ScopeGuardService
     from app.core.config import get_settings
     from app.infrastructure.db.repositories.audit_log_repository import (
@@ -46,6 +47,9 @@ async def _execute_scan(scan_id: UUID) -> None:
     )
     from app.infrastructure.db.repositories.authorization_repository import (
         SqlAlchemyAuthorizationRecordRepository,
+    )
+    from app.infrastructure.db.repositories.finding_repository import (
+        SqlAlchemyFindingRepository,
     )
     from app.infrastructure.db.repositories.project_repository import SqlAlchemyProjectRepository
     from app.infrastructure.db.repositories.scan_repository import SqlAlchemyScanRepository
@@ -76,6 +80,14 @@ async def _execute_scan(scan_id: UUID) -> None:
 
     try:
         async with session_factory() as session:
+            import logging
+
+            _log = logging.getLogger(__name__)
+            _log.warning(
+                "CELERY_DEBUG: _execute_scan started for scan_id=%s, "
+                "correlation_service WILL be injected",
+                scan_id,
+            )
             execution_engine = ExecutionEngine(
                 scan_repository=SqlAlchemyScanRepository(session),
                 scope_guard=ScopeGuardService(
@@ -89,9 +101,27 @@ async def _execute_scan(scan_id: UUID) -> None:
                 tool_result_repository=SqlAlchemyToolResultRepository(session),
                 normalizer_registry=normalizer_registry,
                 default_timeout_seconds=settings.SCAN_DEFAULT_TIMEOUT_SECONDS,
+                correlation_service=CorrelationService(
+                    SqlAlchemyFindingRepository(session)
+                ),
+            )
+            _log.warning(
+                "CELERY_DEBUG: correlation_service=%s, "
+                "correlation_enabled=%s",
+                type(execution_engine._correlation).__name__,
+                execution_engine._correlation is not None,
             )
             await execution_engine.run(scan_id)
+            _log.warning(
+                "CELERY_DEBUG: execution_engine.run() completed, "
+                "about to commit session for scan_id=%s",
+                scan_id,
+            )
             await session.commit()
+            _log.warning(
+                "CELERY_DEBUG: session committed for scan_id=%s",
+                scan_id,
+            )
     finally:
         await engine.dispose()
 
@@ -217,5 +247,35 @@ async def _tick_schedules() -> None:
                 except Exception:
                     await session.rollback()
                     continue
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(name="specter.run_ai_analysis")
+def run_ai_analysis_task(project_id: str) -> None:
+    """Run AI analysis pipeline for a project: planner suggestions + correlation."""
+    asyncio.run(_run_ai_analysis(UUID(project_id)))
+
+
+async def _run_ai_analysis(project_id: UUID) -> None:
+    """Async implementation of the AI analysis pipeline."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.application.analyzer_service import AnalyzerService
+    from app.core.config import get_settings
+    from app.infrastructure.db.repositories.finding_repository import SqlAlchemyFindingRepository
+
+    settings = get_settings()
+    engine = create_async_engine(str(settings.DATABASE_URL))
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+
+            analyzer = AnalyzerService(finding_repo=finding_repo)
+            await analyzer.correlate_findings(project_id)
+
+            await session.commit()
     finally:
         await engine.dispose()

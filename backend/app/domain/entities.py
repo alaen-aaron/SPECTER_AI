@@ -18,6 +18,7 @@ from app.domain.value_objects import (
     SCAN_CANCELLABLE_STATUSES,
     SCAN_TERMINAL_STATUSES,
     VALID_PROJECT_TRANSITIONS,
+    AIOutputReviewStatus,
     AssetType,
     AuthorizationStatus,
     EvidenceType,
@@ -26,9 +27,11 @@ from app.domain.value_objects import (
     GraphNodeType,
     InvitationStatus,
     OrganizationRole,
+    PlannedActionStatus,
     ProjectRole,
     ProjectState,
     ReportStatus,
+    RiskScoreSource,
     ScanStatus,
     ScheduleFrequency,
     Severity,
@@ -453,4 +456,106 @@ class Schedule:
     last_run_at: datetime | None = None
     next_run_at: datetime | None = None
     created_by: UUID | None = None
+    created_at: datetime | None = None
+
+
+# --- AI Decision Engine (Phase 4, SRS §8) -----------------------------------
+
+
+@dataclass(slots=True)
+class PlannedAction:
+    """
+    A planner-suggested action awaiting human review (SRS §8.4).
+
+    The AI emits PlannedAction objects with status=pending_review;
+    a human must approve via the API before anything is executed.
+    This is a hard architectural boundary — no code path exists where
+    an LLM response is deserialized directly into a Celery task.
+    """
+
+    id: UUID
+    project_id: UUID
+    action_type: str
+    title: str
+    description: str
+    justification: str
+    plugin: str | None = None
+    target_ids: list[UUID] = field(default_factory=list)
+    plugin_config: dict[str, object] = field(default_factory=dict)
+    status: PlannedActionStatus = PlannedActionStatus.PENDING_REVIEW
+    approved_by: UUID | None = None
+    approved_at: datetime | None = None
+    rejection_reason: str | None = None
+    expires_at: datetime | None = None
+    created_by: UUID | None = None
+    created_at: datetime | None = None
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status is PlannedActionStatus.PENDING_REVIEW
+
+    @property
+    def is_approvable(self) -> bool:
+        return self.status is PlannedActionStatus.PENDING_REVIEW
+
+
+@dataclass(slots=True)
+class RiskScore:
+    """
+    Deterministic risk score for a Finding (SRS FR-7.3).
+
+    base_score is computed (CVSS-derived + exposure context);
+    ai_rationale is an explanation layer — the score itself is never
+    solely an LLM hallucination.
+    """
+
+    id: UUID
+    finding_id: UUID
+    base_score: float
+    exposure_modifier: float = 0.0
+    ai_rationale: str | None = None
+    review_status: AIOutputReviewStatus = AIOutputReviewStatus.AI_DRAFTED
+    source: RiskScoreSource = RiskScoreSource.COMPUTED
+    computed_at: datetime | None = None
+
+    @property
+    def effective_score(self) -> float:
+        return self.base_score + self.exposure_modifier
+
+
+@dataclass(slots=True)
+class PromptTemplate:
+    """
+    Versioned prompt template (SRS §8.2).
+
+    Stored in the repo with required context variables and expected
+    output schema. Each template has a test fixture for regression testing.
+    """
+
+    id: UUID
+    name: str
+    version: int
+    purpose: str
+    template_text: str
+    required_variables: list[str] = field(default_factory=list)
+    expected_output_schema: dict[str, object] = field(default_factory=dict)
+    is_active: bool = True
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class AIContextMemory:
+    """
+    Per-project retrieval store for AI context continuity (SRS §8).
+
+    Stores prior findings, report text, and project state summaries
+    so the AI has continuity across a multi-week engagement without
+    re-sending the whole history each call.
+    """
+
+    id: UUID
+    project_id: UUID
+    memory_type: str
+    content: str
+    metadata: dict[str, object] = field(default_factory=dict)
     created_at: datetime | None = None

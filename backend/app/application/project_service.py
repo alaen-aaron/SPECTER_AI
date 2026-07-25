@@ -18,6 +18,7 @@ from app.domain.entities import Project, ProjectMember
 from app.domain.exceptions import (
     InvalidProjectStateTransitionError,
     NotAProjectMemberError,
+    ProjectMemberAlreadyExistsError,
     ProjectNotAuthorizedError,
     ProjectNotFoundError,
 )
@@ -126,6 +127,9 @@ class ProjectService:
 
     async def add_member(self, project_id: UUID, user_id: UUID, role: ProjectRole) -> ProjectMember:
         await self.get(project_id)
+        existing = await self._projects.get_member(project_id, user_id)
+        if existing is not None:
+            raise ProjectMemberAlreadyExistsError(project_id, user_id)
         member = ProjectMember(
             project_id=project_id,
             user_id=user_id,

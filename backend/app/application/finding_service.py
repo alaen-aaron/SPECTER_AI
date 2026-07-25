@@ -61,6 +61,32 @@ class FindingService:
             raise FindingNotFoundError(finding_id)
         return finding
 
+    async def create(
+        self,
+        project_id: UUID,
+        title: str,
+        severity: Severity,
+        description: str | None = None,
+        cvss_score: float | None = None,
+        dedup_key: str = "",
+    ) -> Finding:
+        now = datetime.now(UTC)
+        finding = Finding(
+            id=uuid4(),
+            project_id=project_id,
+            title=title,
+            severity=severity,
+            status=FindingStatus.OPEN,
+            description=description,
+            cvss_score=cvss_score,
+            dedup_key=dedup_key,
+            created_at=now,
+        )
+        await self._findings.add(finding)
+        if self._graph is not None:
+            await self._project_findings_to_graph(project_id, [finding])
+        return finding
+
     async def create_from_tool_result(
         self,
         project_id: UUID,

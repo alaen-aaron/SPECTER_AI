@@ -12,8 +12,10 @@ from app.api.v1.deps import (
     require_finding_edit_permission,
     require_finding_view_permission,
     require_project_role,
+    require_scan_launch_permission,
 )
 from app.api.v1.schemas.findings import (
+    CreateFindingRequest,
     FindingResponse,
     PaginatedFindingResponse,
     UpdateFindingStatusRequest,
@@ -47,6 +49,28 @@ async def list_findings(
     items = findings[:limit]
     next_cursor = items[-1].created_at if has_more and items else None
     return PaginatedFindingResponse(items=items, next_cursor=next_cursor)
+
+
+@router.post(
+    "/projects/{project_id}/findings",
+    response_model=FindingResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a finding for a project (scan-capable roles or org admin)",
+)
+async def create_finding(
+    project_id: UUID,
+    body: CreateFindingRequest,
+    _member: ProjectMember | OrganizationMember = Depends(require_scan_launch_permission()),
+    service: FindingService = Depends(get_finding_service),
+) -> Finding:
+    return await service.create(
+        project_id=project_id,
+        title=body.title,
+        severity=body.severity,
+        description=body.description,
+        cvss_score=body.cvss_score,
+        dedup_key=body.dedup_key,
+    )
 
 
 @router.get(

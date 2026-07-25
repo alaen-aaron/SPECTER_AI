@@ -12,9 +12,13 @@ import hashlib
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import structlog
+
 from app.domain.entities import Finding, ToolResult
 from app.domain.repositories import FindingRepository
 from app.domain.value_objects import FindingStatus, Severity
+
+logger = structlog.get_logger(__name__)
 
 
 def make_dedup_key(
@@ -80,12 +84,22 @@ class CorrelationService:
         Process a batch of tool results and return all findings
         (both newly created and updated existing ones).
         """
+        logger.info(
+            "correlation_started",
+            project_id=str(project_id),
+            tool_result_count=len(tool_results),
+        )
         created: list[Finding] = []
 
         for tr in tool_results:
             new_findings = await self._process_tool_result(project_id, tr)
             created.extend(new_findings)
 
+        logger.info(
+            "correlation_completed",
+            project_id=str(project_id),
+            findings_created=len(created),
+        )
         return created
 
     async def _process_tool_result(
@@ -97,6 +111,14 @@ class CorrelationService:
         plugin = tool_result.plugin
         created: list[Finding] = []
 
+        logger.info(
+            "correlation_processing_tool_result",
+            tool_result_id=str(tool_result.id),
+            plugin=plugin,
+            payload_keys=list(payload.keys()),
+            has_ports=bool(payload.get("ports")),
+        )
+
         if plugin == "nmap":
             created.extend(
                 await self._correlate_nmap(project_id, tool_result, payload)
@@ -104,6 +126,11 @@ class CorrelationService:
         elif plugin in ("nuclei", "nikto"):
             created.extend(
                 await self._correlate_web_vuln(project_id, tool_result, payload, plugin)
+            )
+        else:
+            logger.info(
+                "correlation_no_handler_for_plugin",
+                plugin=plugin,
             )
 
         return created
@@ -117,6 +144,13 @@ class CorrelationService:
         target = str(payload.get("target", ""))
         ports = payload.get("ports", [])
         created: list[Finding] = []
+
+        logger.info(
+            "nmap_correlation_start",
+            target=target,
+            ports_type=type(ports).__name__,
+            ports_count=len(ports) if isinstance(ports, list) else 0,
+        )
 
         if not isinstance(ports, list):
             return created
@@ -132,37 +166,58 @@ class CorrelationService:
             if port is None:
                 continue
 
-            severity = _INSECURE_SERVICES.get(service.lower())
-            if severity is None:
-                continue
+            insecure_severity = _INSECURE_SERVICES.get(service.lower())
+            if insecure_severity is not None:
+                title = f"Insecure service: {service} on {target}:{port}"
+                severity = insecure_severity
+                description = (
+                    f"Service '{service}' detected on {target}:{port}"
+                    + (f" ({version})" if (version := port_info.get("version", "")) else "")
+                    + " — associated with known security risks."
+                )
+            else:
+                title = f"Open port: {service} on {target}:{port}"
+                severity = Severity.INFO
+                version = port_info.get("version", "")
+                description = (
+                    f"Service '{service}' detected on {target}:{port}"
+                    + (f" ({version})" if version else "")
+                    + " — open port identified during network scan."
+                )
 
             dedup_key = make_dedup_key(
                 project_id, "nmap", target, int(port), service
             )
             existing = await self._findings.get_by_dedup_key(project_id, dedup_key)
             if existing is not None:
+                logger.info(
+                    "nmap_finding_deduplicated",
+                    dedup_key=dedup_key,
+                    existing_finding_id=str(existing.id),
+                )
                 if tool_result.id not in existing.tool_result_ids:
                     existing.tool_result_ids.append(tool_result.id)
                 continue
 
-            version = port_info.get("version", "")
             finding = Finding(
                 id=uuid4(),
                 project_id=project_id,
-                title=f"Insecure service: {service} on {target}:{port}",
+                title=title,
                 severity=severity,
                 status=FindingStatus.OPEN,
-                description=(
-                    f"Service '{service}' detected on {target}:{port}"
-                    + (f" ({version})" if version else "")
-                    + " — associated with known security risks."
-                ),
+                description=description,
                 dedup_key=dedup_key,
                 tool_result_ids=[tool_result.id],
                 created_at=datetime.now(UTC),
             )
             await self._findings.add(finding)
             created.append(finding)
+            logger.info(
+                "nmap_finding_created",
+                finding_id=str(finding.id),
+                title=title,
+                severity=severity.value,
+            )
 
         return created
 

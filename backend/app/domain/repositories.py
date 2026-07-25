@@ -20,6 +20,7 @@ from typing import Protocol
 from uuid import UUID
 
 from app.domain.entities import (
+    AIContextMemory,
     Asset,
     AuditLogEntry,
     AuthorizationRecord,
@@ -30,10 +31,13 @@ from app.domain.entities import (
     Organization,
     OrganizationInvitation,
     OrganizationMember,
+    PlannedAction,
     Project,
     ProjectMember,
+    PromptTemplate,
     Report,
     ReportVersion,
+    RiskScore,
     Scan,
     Schedule,
     Session,
@@ -50,6 +54,7 @@ from app.domain.value_objects import (
     GraphEdgeType,
     GraphNodeType,
     OrganizationRole,
+    PlannedActionStatus,
     ProjectRole,
     ReportStatus,
     ScanStatus,
@@ -295,3 +300,45 @@ class ScheduleRepository(Protocol):
     async def list_due(self, now: datetime) -> list[Schedule]: ...
     async def update(self, schedule: Schedule) -> None: ...
     async def delete(self, schedule_id: UUID) -> None: ...
+
+
+# --- AI Decision Engine (Phase 4, SRS §8) -----------------------------------
+
+
+class PlannedActionRepository(Protocol):
+    async def create(self, action: PlannedAction) -> None: ...
+    async def get(self, action_id: UUID) -> PlannedAction | None: ...
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        status: PlannedActionStatus | None = None,
+        limit: int = 20,
+        cursor: datetime | None = None,
+    ) -> list[PlannedAction]: ...
+    async def update(self, action: PlannedAction) -> None: ...
+
+
+class RiskScoreRepository(Protocol):
+    async def create(self, score: RiskScore) -> None: ...
+    async def get(self, score_id: UUID) -> RiskScore | None: ...
+    async def get_by_finding(self, finding_id: UUID) -> RiskScore | None: ...
+    async def list_for_project(self, project_id: UUID) -> list[RiskScore]: ...
+    async def update(self, score: RiskScore) -> None: ...
+
+
+class PromptTemplateRepository(Protocol):
+    async def create(self, template: PromptTemplate) -> None: ...
+    async def get(self, template_id: UUID) -> PromptTemplate | None: ...
+    async def get_active_by_name(self, name: str) -> PromptTemplate | None: ...
+    async def list_all(self) -> list[PromptTemplate]: ...
+    async def update(self, template: PromptTemplate) -> None: ...
+    async def delete(self, template_id: UUID) -> None: ...
+
+
+class AIContextMemoryRepository(Protocol):
+    async def add(self, memory: AIContextMemory) -> None: ...
+    async def list_for_project(self, project_id: UUID) -> list[AIContextMemory]: ...
+    async def list_for_project_by_type(
+        self, project_id: UUID, memory_type: str
+    ) -> list[AIContextMemory]: ...
+    async def delete(self, memory_id: UUID) -> None: ...

@@ -15,6 +15,10 @@ Milestone 4A addition: after plugin execution, the engine runs the
 output through the normalizer registry (if a normalizer is registered
 for the plugin) and persists a `ToolResult` row. Normalization failure
 is non-fatal — raw output is still available via logs_path.
+
+Pipeline integration: after the ToolResult is persisted, the engine
+invokes ``CorrelationService.correlate()`` (if injected) so that
+Findings are created automatically from the normalised output.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from uuid import UUID, uuid4
 
 import structlog
 
+from app.application.correlation_service import CorrelationService
 from app.application.scope_guard_service import ScopeGuardService
 from app.domain.entities import AuditLogEntry, Scan, ToolResult
 from app.domain.exceptions import DomainError
@@ -47,6 +52,7 @@ class ExecutionEngine:
         tool_result_repository: ToolResultRepository,
         normalizer_registry: NormalizerRegistry,
         default_timeout_seconds: int,
+        correlation_service: CorrelationService | None = None,
     ) -> None:
         self._scans = scan_repository
         self._scope_guard = scope_guard
@@ -56,6 +62,7 @@ class ExecutionEngine:
         self._tool_results = tool_result_repository
         self._normalizers = normalizer_registry
         self._default_timeout_seconds = default_timeout_seconds
+        self._correlation = correlation_service
 
     async def run(self, scan_id: UUID) -> None:
         scan = await self._scans.get(scan_id)
@@ -145,6 +152,33 @@ class ExecutionEngine:
             created_at=datetime.now(UTC),
         )
         await self._tool_results.add(tool_result)
+
+        log.info(
+            "scan_tool_result_persisted",
+            tool_result_id=str(tool_result.id),
+            plugin=tool_result.plugin,
+            payload_keys=list(normalized_payload.keys()),
+            correlation_enabled=self._correlation is not None,
+        )
+
+        # --- Pipeline integration: create Findings from the ToolResult ---
+        if self._correlation is not None:
+            try:
+                findings = await self._correlation.correlate(
+                    scan.project_id, [tool_result]
+                )
+                log.info(
+                    "scan_correlation_completed",
+                    findings_created=len(findings),
+                    finding_ids=[str(f.id) for f in findings],
+                )
+            except Exception as exc:  # noqa: BLE001 — correlation failure must not fail the scan
+                log.warning(
+                    "scan_correlation_failed",
+                    scan_id=str(scan_id),
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
         await self._scans.append_log(scan_id, logs_path)
         artifacts_path = self._artifacts.artifacts_directory_if_any(scan_id)

@@ -22,6 +22,9 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# AI Decision Engine services (Phase 4)
+from app.application.ai_reporter_service import AIReporterService
+from app.application.analyzer_service import AnalyzerService
 from app.application.asset_service import AssetService
 from app.application.auth_service import (
     LoginService,
@@ -31,12 +34,17 @@ from app.application.auth_service import (
     RegisterUserService,
 )
 from app.application.authorization_service import AuthorizationRecordService
+from app.application.context_memory_service import ContextMemoryService
 from app.application.evidence_service import EvidenceService
+from app.application.explainer_service import ExplainerService
 from app.application.finding_service import FindingService
 from app.application.graph_service import GraphService
 from app.application.organization_service import OrganizationService
+from app.application.planner_service import PlannerService
 from app.application.project_service import ProjectService
+from app.application.prompt_library_service import PromptLibraryService
 from app.application.report_service import ReportService
+from app.application.risk_engine_service import RiskEngineService
 from app.application.scan_service import ScanService, ScanTaskDispatcher
 from app.application.schedule_service import ScheduleService
 from app.application.scope_guard_service import ScopeGuardService
@@ -53,6 +61,9 @@ from app.domain.value_objects import (
 from app.infrastructure.celery_app.dispatcher import (
     CeleryScanTaskDispatcher,
     CeleryWorkflowTaskDispatcher,
+)
+from app.infrastructure.db.repositories.ai_context_memory_repository import (
+    SqlAlchemyAIContextMemoryRepository,
 )
 from app.infrastructure.db.repositories.asset_repository import SqlAlchemyAssetRepository
 from app.infrastructure.db.repositories.audit_log_repository import SqlAlchemyAuditLogRepository
@@ -71,11 +82,20 @@ from app.infrastructure.db.repositories.identity_repository import (
 from app.infrastructure.db.repositories.organization_repository import (
     SqlAlchemyOrganizationRepository,
 )
+
+# AI Decision Engine repositories (Phase 4)
+from app.infrastructure.db.repositories.planned_action_repository import (
+    SqlAlchemyPlannedActionRepository,
+)
 from app.infrastructure.db.repositories.project_repository import SqlAlchemyProjectRepository
+from app.infrastructure.db.repositories.prompt_template_repository import (
+    SqlAlchemyPromptTemplateRepository,
+)
 from app.infrastructure.db.repositories.report_repository import (
     SqlAlchemyReportRepository,
     SqlAlchemyReportVersionRepository,
 )
+from app.infrastructure.db.repositories.risk_score_repository import SqlAlchemyRiskScoreRepository
 from app.infrastructure.db.repositories.scan_repository import SqlAlchemyScanRepository
 from app.infrastructure.db.repositories.target_repository import SqlAlchemyTargetRepository
 from app.infrastructure.db.repositories.workflow_repository import (
@@ -381,6 +401,97 @@ def get_schedule_service(
     workflow_repo: SqlAlchemyWorkflowRepository = Depends(get_workflow_repository),
 ) -> ScheduleService:
     return ScheduleService(schedule_repo, workflow_repo)
+
+
+# --- Tier 2: AI Decision Engine services (Phase 4) --------------------------
+
+
+def get_planned_action_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyPlannedActionRepository:
+    return SqlAlchemyPlannedActionRepository(session)
+
+
+def get_risk_score_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyRiskScoreRepository:
+    return SqlAlchemyRiskScoreRepository(session)
+
+
+def get_prompt_template_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyPromptTemplateRepository:
+    return SqlAlchemyPromptTemplateRepository(session)
+
+
+def get_ai_context_memory_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyAIContextMemoryRepository:
+    return SqlAlchemyAIContextMemoryRepository(session)
+
+
+def get_planner_service(
+    action_repo: SqlAlchemyPlannedActionRepository = Depends(get_planned_action_repository),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+    context_memory_repo: SqlAlchemyAIContextMemoryRepository = Depends(
+        get_ai_context_memory_repository
+    ),
+) -> PlannerService:
+    return PlannerService(
+        planned_action_repo=action_repo,
+        finding_repo=finding_repo,
+        asset_repo=asset_repo,
+        context_memory_repo=context_memory_repo,
+    )
+
+
+def get_analyzer_service(
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+) -> AnalyzerService:
+    return AnalyzerService(finding_repo=finding_repo)
+
+
+def get_risk_engine_service(
+    risk_score_repo: SqlAlchemyRiskScoreRepository = Depends(get_risk_score_repository),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+) -> RiskEngineService:
+    return RiskEngineService(
+        risk_score_repo=risk_score_repo,
+        finding_repo=finding_repo,
+    )
+
+
+def get_explainer_service(
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+) -> ExplainerService:
+    return ExplainerService(finding_repo=finding_repo)
+
+
+def get_ai_reporter_service(
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    report_repo: SqlAlchemyReportRepository = Depends(get_report_repository),
+) -> AIReporterService:
+    return AIReporterService(
+        finding_repo=finding_repo,
+        report_repo=report_repo,
+    )
+
+
+def get_context_memory_service(
+    memory_repo: SqlAlchemyAIContextMemoryRepository = Depends(
+        get_ai_context_memory_repository
+    ),
+) -> ContextMemoryService:
+    return ContextMemoryService(memory_repo=memory_repo)
+
+
+def get_prompt_library_service(
+    template_repo: SqlAlchemyPromptTemplateRepository = Depends(
+        get_prompt_template_repository
+    ),
+) -> PromptLibraryService:
+    return PromptLibraryService(template_repo=template_repo)
 
 
 # --- Tier 3: authentication + RBAC --------------------------------------------

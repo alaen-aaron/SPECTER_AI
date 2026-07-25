@@ -11,8 +11,11 @@ Parses standard nmap stdout into a structured payload:
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 # Matches lines like: 22/tcp open ssh OpenSSH 8.9p1
 _PORT_LINE_RE = re.compile(
@@ -41,6 +44,18 @@ class NmapNormalizer:
         raw_stderr: str,
         plugin_config: dict[str, Any],
     ) -> dict[str, Any]:
+        _log.warning(
+            "NMAP_NORMALIZE_RAW_STDOUT length=%d, repr_first_500=%r",
+            len(raw_stdout),
+            raw_stdout[:500],
+        )
+        if raw_stderr:
+            _log.warning(
+                "NMAP_NORMALIZE_RAW_STDERR length=%d, repr_first_500=%r",
+                len(raw_stderr),
+                raw_stderr[:500],
+            )
+
         target = str(plugin_config.get("target", ""))
 
         # Try to extract target from output if config doesn't have it
@@ -55,7 +70,12 @@ class NmapNormalizer:
         closed_count = 0
         filtered_count = 0
 
-        for match in _PORT_LINE_RE.finditer(raw_stdout):
+        regex_matches = list(_PORT_LINE_RE.finditer(raw_stdout))
+        _log.warning(
+            "NMAP_NORMALIZE_REGEX matches=%d", len(regex_matches)
+        )
+
+        for match in regex_matches:
             port_num = int(match.group(1))
             protocol = match.group(2)
             state = match.group(3)
@@ -79,7 +99,7 @@ class NmapNormalizer:
             elif state == "filtered":
                 filtered_count += 1
 
-        return {
+        result = {
             "target": target,
             "host_up": host_up,
             "ports": ports,
@@ -88,3 +108,9 @@ class NmapNormalizer:
             "filtered_port_count": filtered_count,
             "total_ports_scanned": open_count + closed_count + filtered_count,
         }
+        _log.warning(
+            "NMAP_NORMALIZE_RESULT target=%s host_up=%s ports_count=%d "
+            "open=%d closed=%d filtered=%d",
+            target, host_up, len(ports), open_count, closed_count, filtered_count,
+        )
+        return result

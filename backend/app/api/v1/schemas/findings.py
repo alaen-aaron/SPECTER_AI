@@ -26,6 +26,14 @@ class FindingResponse(BaseModel):
     created_at: datetime | None
 
 
+class CreateFindingRequest(BaseModel):
+    title: str
+    severity: Severity
+    description: str | None = None
+    cvss_score: float | None = None
+    dedup_key: str = ""
+
+
 class UpdateFindingStatusRequest(BaseModel):
     status: FindingStatus
 
