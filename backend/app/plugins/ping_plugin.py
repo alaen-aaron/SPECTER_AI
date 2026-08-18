@@ -9,7 +9,7 @@ from typing import Any
 from app.domain.exceptions import InvalidPluginConfigError
 from app.domain.target_validation import validate_target_value
 from app.domain.value_objects import TargetType
-from app.plugins.base import Plugin, PluginResult
+from app.plugins.base import Plugin, PluginCapability, PluginCategory, PluginMetadata, PluginResult
 
 _PING_COUNT = 4
 _PING_DEADLINE_SECONDS = 2
@@ -113,4 +113,23 @@ class PingPlugin(Plugin):
             stderr=result.stderr,
             exit_code=result.returncode,
             metadata={"plugin": "ping", "hostname": hostname, "command": command},
+        )
+
+    def capability(self) -> PluginCapability:
+        return PluginCapability(
+            input_asset_types=frozenset({"host", "domain"}),
+            output_asset_types=frozenset({"host_reachability"}),
+            produces_findings=False,
+            requires_host=True,
+            requires_open_ports=False,
+        )
+
+    def metadata(self) -> PluginMetadata:
+        return PluginMetadata(
+            version="1.0.0",
+            author="SPECTER Team",
+            category=PluginCategory.RECONNAISSANCE,
+            tags=frozenset({"network", "icmp", "host-discovery"}),
+            required_binaries=frozenset({"ping"}),
+            description_long="Sends ICMP echo requests to check host reachability.",
         )

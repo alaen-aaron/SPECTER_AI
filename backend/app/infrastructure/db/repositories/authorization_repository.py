@@ -44,13 +44,9 @@ class SqlAlchemyAuthorizationRecordRepository:
         self, project_id: UUID, on_date: datetime
     ) -> AuthorizationRecord | None:
         """
-        Returns the record covering `on_date`, if any.
-
-        The final "is this actually valid right now" decision still
-        goes through `AuthorizationRecord.is_active_on()` in the domain
-        entity, not here — this query is a candidate lookup, not the
-        authority on validity, matching SRS §16.3's requirement that
-        expired-but-not-yet-flipped records never grant scope.
+        Legacy — returns the first active record.  Prefer
+        ``list_active_for_project`` when checking a target against
+        *all* active authorizations.
         """
         stmt = select(AuthorizationRecordModel).where(
             AuthorizationRecordModel.project_id == project_id,
@@ -61,6 +57,19 @@ class SqlAlchemyAuthorizationRecordRepository:
         result = await self._session.execute(stmt)
         row = result.scalars().first()
         return _record_to_entity(row) if row else None
+
+    async def list_active_for_project(
+        self, project_id: UUID, on_date: datetime
+    ) -> list[AuthorizationRecord]:
+        """Return every active authorization record for a project on *on_date*."""
+        stmt = select(AuthorizationRecordModel).where(
+            AuthorizationRecordModel.project_id == project_id,
+            AuthorizationRecordModel.status == AuthorizationStatus.ACTIVE.value,
+            AuthorizationRecordModel.authorized_from <= on_date.date(),
+            AuthorizationRecordModel.authorized_to >= on_date.date(),
+        ).order_by(AuthorizationRecordModel.created_at.desc())
+        result = await self._session.execute(stmt)
+        return [_record_to_entity(row) for row in result.scalars().all()]
 
     async def list_for_project(self, project_id: UUID) -> list[AuthorizationRecord]:
         stmt = select(AuthorizationRecordModel).where(

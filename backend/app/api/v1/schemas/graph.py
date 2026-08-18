@@ -48,3 +48,29 @@ class GraphPathResponse(BaseModel):
 
     nodes: list[GraphNodeResponse]
     length: int
+
+
+class GraphSummaryResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    project_id: UUID
+    total_nodes: int
+    total_edges: int
+    nodes_by_type: dict[str, int]
+    edges_by_type: dict[str, int]
+
+
+class GraphBlastRadiusResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    start_node_id: UUID
+    reachable_nodes: list[GraphNodeResponse]
+    count: int
+
+
+class GraphRebuildResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    project_id: UUID
+    nodes_created: int
+    edges_created: int

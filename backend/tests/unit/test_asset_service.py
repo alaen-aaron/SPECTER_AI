@@ -6,10 +6,11 @@ from uuid import uuid4
 import pytest
 
 from app.application.asset_service import AssetService
+from app.application.graph_service import GraphService
 from app.domain.entities import Asset, ToolResult
 from app.domain.exceptions import AssetNotFoundError
-from app.domain.value_objects import AssetType
-from tests.fakes import FakeAssetRepository
+from app.domain.value_objects import AssetType, GraphEdgeType
+from tests.fakes import FakeAssetRepository, FakeGraphRepository
 
 
 def _make_asset(
@@ -45,6 +46,26 @@ def _make_tool_result(plugin, payload, scan_id=None):
 @pytest.fixture
 def repo():
     return FakeAssetRepository()
+
+
+class _StrictGraphService(GraphService):
+    """Graph service that rejects non-enum relationship types, mirroring the
+    real SqlAlchemyGraphRepository which calls ``.value`` on them."""
+
+    def __init__(self) -> None:
+        super().__init__(FakeGraphRepository())
+        self.edges: list[tuple] = []
+
+    async def add_edge(
+        self, project_id, from_node_id, to_node_id, relationship_type, weight=1.0, **properties
+    ):
+        assert type(relationship_type) is GraphEdgeType, (
+            f"relationship_type must be a GraphEdgeType, got {relationship_type!r}"
+        )
+        self.edges.append((from_node_id, to_node_id, relationship_type))
+        return await super().add_edge(
+            project_id, from_node_id, to_node_id, relationship_type, weight, **properties
+        )
 
 
 def _make_service(repo: FakeAssetRepository) -> AssetService:
@@ -207,3 +228,32 @@ async def test_upsert_from_unknown_plugin_returns_empty(repo):
     assets = await svc.upsert_from_tool_result(project_id, tr)
 
     assert assets == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_projects_graph_edge_with_enum_relationship(repo):
+    """Regression: host→service graph edges must use a GraphEdgeType enum,
+    not a raw string (the SQL repo calls ``.value`` on it)."""
+    project_id = uuid4()
+    tr = _make_tool_result(
+        "nmap",
+        {
+            "target": "10.0.0.1",
+            "host_up": True,
+            "ports": [
+                {
+                    "port": 22, "state": "open", "service": "ssh",
+                    "protocol": "tcp", "version": "OpenSSH 8.9",
+                },
+            ],
+        },
+    )
+
+    graph = _StrictGraphService()
+    svc = AssetService(asset_repository=repo, graph_service=graph)
+    assets = await svc.upsert_from_tool_result(project_id, tr)
+
+    assert len(assets) == 2
+    assert len(graph.edges) == 1
+    _, _, rel = graph.edges[0]
+    assert rel is GraphEdgeType.HOSTS

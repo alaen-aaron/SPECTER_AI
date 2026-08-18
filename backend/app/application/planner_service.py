@@ -5,6 +5,10 @@ Given current project asset/finding state, proposes a ranked list of
 next recon/scan actions with justification. Output: PlannedAction[]
 with status=pending_review. Never auto-executed — a human must approve
 via the API (SRS §8.4).
+
+Milestone 4.5: Graph-aware suggestions — uses Knowledge Graph traversal
+to identify attack paths, blast radius, and connected findings for
+richer, context-aware recommendations.
 """
 
 from __future__ import annotations
@@ -23,9 +27,10 @@ from app.domain.repositories import (
     AIContextMemoryRepository,
     AssetRepository,
     FindingRepository,
+    GraphRepository,
     PlannedActionRepository,
 )
-from app.domain.value_objects import PlannedActionStatus
+from app.domain.value_objects import GraphNodeType, PlannedActionStatus
 
 
 class PlannerService:
@@ -35,6 +40,10 @@ class PlannerService:
     Per SRS §8.4: the AI never touches the plugin execution path directly.
     It emits PlannedAction objects with status=pending_review; a human must
     approve; only then does the Workflow Engine enqueue it.
+
+    Milestone 4.5: When a GraphRepository is available, the planner
+    enriches suggestions with graph-derived intelligence (blast radius,
+    attack paths, connected findings).
     """
 
     def __init__(
@@ -44,12 +53,14 @@ class PlannerService:
         asset_repo: AssetRepository,
         context_memory_repo: AIContextMemoryRepository,
         llm_provider: LLMProvider | None = None,
+        graph_repo: GraphRepository | None = None,
     ) -> None:
         self._action_repo = planned_action_repo
         self._finding_repo = finding_repo
         self._asset_repo = asset_repo
         self._context_memory_repo = context_memory_repo
         self._llm = llm_provider
+        self._graph_repo = graph_repo
 
     async def suggest(
         self,
@@ -68,6 +79,10 @@ class PlannerService:
 
         if self._llm is not None:
             suggestions = await self._suggest_with_llm(project_id, findings, assets)
+        elif self._graph_repo is not None:
+            suggestions = await self._suggest_graph_enriched(
+                project_id, findings, assets
+            )
         else:
             suggestions = self._suggest_heuristic(project_id, findings, assets)
 
@@ -252,5 +267,93 @@ class PlannerService:
                         "prioritized for investigation."
                     ),
                 })
+
+        return suggestions[:3]
+
+    async def _suggest_graph_enriched(
+        self,
+        project_id: UUID,
+        findings: list[Finding],
+        assets: list[Asset],
+    ) -> list[dict[str, object]]:
+        """Graph-enriched suggestion generation.
+
+        Uses Knowledge Graph to identify blast radius, attack paths,
+        and connected finding clusters for richer recommendations.
+        """
+        suggestions: list[dict[str, object]] = []
+
+        if self._graph_repo is None:
+            return self._suggest_heuristic(project_id, findings, assets)
+
+        all_nodes = await self._graph_repo.list_nodes_for_project(project_id)
+        asset_nodes = [
+            n for n in all_nodes if n.node_type == GraphNodeType.ASSET
+        ]
+        finding_nodes = [
+            n for n in all_nodes if n.node_type == GraphNodeType.FINDING
+        ]
+
+        for fn in finding_nodes:
+            blast = await self._graph_repo.blast_radius(
+                project_id, fn.id, max_depth=3
+            )
+            affected = [
+                n
+                for n in blast
+                if n.node_type == GraphNodeType.ASSET
+            ]
+            if len(affected) >= 3:
+                suggestions.append({
+                    "action_type": "investigate",
+                    "title": (
+                        f"Investigate finding with blast radius "
+                        f"of {len(affected)} assets"
+                    ),
+                    "description": (
+                        f"Finding '{fn.label}' has {len(affected)} assets "
+                        "in its blast radius. Prioritize investigation."
+                    ),
+                    "justification": (
+                        "Graph analysis shows this finding impacts "
+                        "multiple downstream assets."
+                    ),
+                })
+
+        if not suggestions and asset_nodes and finding_nodes:
+            for an in asset_nodes[:5]:
+                for fn in finding_nodes[:5]:
+                    path = await self._graph_repo.shortest_path(
+                        fn.id, an.id, 4
+                    )
+                    if path and len(path) >= 3:
+                        suggestions.append({
+                            "action_type": "scan",
+                            "title": (
+                                f"Scan target reachable from "
+                                f"finding: {an.label}"
+                            ),
+                            "description": (
+                                f"Graph analysis reveals an attack path "
+                                f"from a finding to '{an.label}' "
+                                f"({len(path)} hops)."
+                            ),
+                            "justification": (
+                                "Attack path detected via graph traversal."
+                            ),
+                            "plugin": "nmap",
+                        })
+                        break
+                if suggestions:
+                    break
+
+        base_suggestions = self._suggest_heuristic(
+            project_id, findings, assets
+        )
+        for s in base_suggestions:
+            if not any(
+                existing["title"] == s["title"] for existing in suggestions
+            ):
+                suggestions.append(s)
 
         return suggestions[:3]

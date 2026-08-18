@@ -7,14 +7,18 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.v1.deps import (
+    get_graph_projector,
     get_graph_service,
     require_project_role,
 )
 from app.api.v1.schemas.graph import (
     AddEdgeRequest,
+    GraphBlastRadiusResponse,
     GraphEdgeResponse,
     GraphNodeResponse,
     GraphPathResponse,
+    GraphRebuildResponse,
+    GraphSummaryResponse,
 )
 from app.application.graph_service import GraphService
 from app.domain.entities import GraphEdge, GraphNode, ProjectMember
@@ -151,3 +155,57 @@ async def delete_edge(
 ) -> Response:
     await service.remove_edge(edge_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/projects/{project_id}/graph/summary",
+    response_model=GraphSummaryResponse,
+    summary="Get graph summary with node/edge counts by type",
+)
+async def graph_summary(
+    project_id: UUID,
+    _member: ProjectMember = Depends(require_project_role()),
+    service: GraphService = Depends(get_graph_service),
+) -> dict[str, object]:
+    return await service.graph_summary(project_id)
+
+
+@router.get(
+    "/projects/{project_id}/graph/blast-radius",
+    response_model=GraphBlastRadiusResponse,
+    summary="Get all nodes reachable from a starting node",
+)
+async def blast_radius(
+    project_id: UUID,
+    node_id: UUID = Query(..., description="Starting node ID"),
+    max_depth: int = Query(default=5, ge=1, le=20),
+    _member: ProjectMember = Depends(require_project_role()),
+    service: GraphService = Depends(get_graph_service),
+) -> dict[str, object]:
+    nodes = await service.blast_radius(project_id, node_id, max_depth)
+    return {
+        "start_node_id": node_id,
+        "reachable_nodes": [GraphNodeResponse.model_validate(n) for n in nodes],
+        "count": len(nodes),
+    }
+
+
+@router.post(
+    "/projects/{project_id}/graph/rebuild",
+    response_model=GraphRebuildResponse,
+    summary="Rebuild the entire graph from relational data",
+)
+async def rebuild_graph(
+    project_id: UUID,
+    _member: ProjectMember = Depends(require_project_role()),
+    projector: object = Depends(get_graph_projector),
+) -> dict[str, object]:
+    from app.application.graph_projector import GraphProjector
+
+    assert isinstance(projector, GraphProjector)
+    counts = await projector.rebuild_graph_from_scratch(project_id)
+    return {
+        "project_id": str(project_id),
+        "nodes_created": counts["nodes"],
+        "edges_created": counts["edges"],
+    }

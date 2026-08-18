@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from app.plugins.normalizer_registry import NormalizerRegistry
 from app.plugins.normalizers.nmap_normalizer import NmapNormalizer
+from app.plugins.normalizers.nuclei_normalizer import NucleiNormalizer
 from app.plugins.normalizers.ping_normalizer import PingNormalizer
 
 # ---------------------------------------------------------------------------
@@ -227,6 +228,73 @@ def test_nmap_normalizer_version_info_parsed() -> None:
     apache = result["ports"][4]
     assert "Apache" in apache["version"]
     assert "2.4.52" in apache["version"]
+
+
+# ---------------------------------------------------------------------------
+# NucleiNormalizer
+# ---------------------------------------------------------------------------
+
+_NUCLEI_JSONL = (
+    '{"template-id":"CVE-2021-1234",'
+    '"info":{"name":"Example RCE","severity":"critical",'
+    '"description":"Remote code execution.",'
+    '"classification":{"cve-id":["CVE-2021-1234"]}},'
+    '"host":"172.18.0.9","matched-at":"http://172.18.0.9:3000/"}\n'
+    '{"template-id":"misconfig-headers",'
+    '"info":{"name":"Missing security headers","severity":"low"},'
+    '"host":"172.18.0.9","matched-at":"http://172.18.0.9:3000/admin"}\n'
+    "not-json-garbage-line\n"
+)
+
+
+def test_nuclei_normalizer_plugin_name() -> None:
+    assert NucleiNormalizer().plugin_name == "nuclei"
+
+
+def test_nuclei_normalizer_parses_jsonl_findings() -> None:
+    result = NucleiNormalizer().normalize(
+        _NUCLEI_JSONL, "", {"target": "http://172.18.0.9:3000"}
+    )
+
+    assert result["target"] == "http://172.18.0.9:3000"
+    assert len(result["vulnerabilities"]) == 2
+
+    critical = result["vulnerabilities"][0]
+    assert critical["template_id"] == "CVE-2021-1234"
+    assert critical["title"] == "Example RCE"
+    assert critical["severity"] == "critical"
+    assert critical["description"] == "Remote code execution."
+
+    low = result["vulnerabilities"][1]
+    assert low["template_id"] == "misconfig-headers"
+    assert low["title"] == "Missing security headers"
+    assert low["severity"] == "low"
+    assert low["description"] is None
+
+
+def test_nuclei_normalizer_skips_non_json_lines() -> None:
+    result = NucleiNormalizer().normalize(
+        "not-json\n\n{}", "", {"target": "http://example.test"}
+    )
+
+    assert result["target"] == "http://example.test"
+    assert len(result["vulnerabilities"]) == 1
+
+
+def test_nuclei_normalizer_empty_output() -> None:
+    result = NucleiNormalizer().normalize("", "", {"target": ""})
+
+    assert result["target"] == ""
+    assert result["vulnerabilities"] == []
+
+
+def test_nuclei_normalizer_falls_back_to_matched_at_target() -> None:
+    result = NucleiNormalizer().normalize(
+        _NUCLEI_JSONL, "", {}
+    )
+
+    assert result["target"] == "http://172.18.0.9:3000/"
+    assert len(result["vulnerabilities"]) == 2
 
 
 # ---------------------------------------------------------------------------

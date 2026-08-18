@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from app.domain.entities import Finding, ToolResult
 from app.domain.exceptions import FindingNotFoundError
 from app.domain.repositories import AssetRepository, FindingRepository
-from app.domain.value_objects import FindingStatus, Severity
+from app.domain.value_objects import FindingStatus, GraphEdgeType, Severity
 
 if TYPE_CHECKING:
     from app.application.graph_service import GraphService
@@ -174,7 +174,7 @@ class FindingService:
                         project_id,
                         node.id,
                         asset_node.id,
-                        "vulnerable_to",
+                        GraphEdgeType.VULNERABLE_TO,
                     )
 
     async def update_status(self, finding_id: UUID, status: FindingStatus) -> Finding:

@@ -346,3 +346,49 @@ class SqlAlchemyGraphRepository:
             delete(GraphNodeModel).where(GraphNodeModel.project_id == project_id)
         )
         await self._session.flush()
+
+    async def blast_radius(
+        self,
+        project_id: UUID,
+        start_node_id: UUID,
+        max_depth: int = 5,
+    ) -> list[GraphNode]:
+        """BFS traversal returning all reachable nodes (excluding start)."""
+        from sqlalchemy import text
+
+        query = text("""
+            WITH RECURSIVE reachable AS (
+                SELECT n.id as node_id, 0 as depth
+                FROM graph_nodes n
+                WHERE n.id = :start_id AND n.project_id = :project_id
+
+                UNION ALL
+
+                SELECT e.to_node_id as node_id, r.depth + 1
+                FROM reachable r
+                JOIN graph_edges e ON e.from_node_id = r.node_id
+                WHERE r.depth < :max_depth
+                    AND e.project_id = :project_id
+                    AND e.to_node_id != :start_id
+            )
+            SELECT DISTINCT node_id FROM reachable
+            WHERE node_id != :start_id
+            ORDER BY node_id
+        """)
+
+        result = await self._session.execute(
+            query,
+            {
+                "start_id": start_node_id,
+                "project_id": project_id,
+                "max_depth": max_depth,
+            },
+        )
+        node_ids = [row[0] for row in result.fetchall()]
+
+        nodes: list[GraphNode] = []
+        for nid in node_ids:
+            node = await self.get_node(nid)
+            if node is not None:
+                nodes.append(node)
+        return nodes

@@ -15,6 +15,7 @@ import pytest
 from app.domain.exceptions import InvalidPluginConfigError
 from app.plugins.echo_plugin import EchoPlugin
 from app.plugins.nmap_plugin import NmapPlugin
+from app.plugins.nuclei_plugin import NucleiPlugin
 from app.plugins.ping_plugin import PingPlugin
 
 # --- Echo -------------------------------------------------------------------
@@ -182,3 +183,41 @@ def test_nmap_execute_against_loopback_succeeds() -> None:
     )
     assert result.exit_code == 0
     assert "127.0.0.1" in result.stdout or "localhost" in result.stdout
+
+
+# --- Nuclei -----------------------------------------------------------------
+
+
+def test_nuclei_validate_config_requires_target() -> None:
+    plugin = NucleiPlugin()
+    with pytest.raises(InvalidPluginConfigError):
+        plugin.validate_config({})
+
+
+def test_nuclei_validate_config_rejects_stale_json_flag() -> None:
+    plugin = NucleiPlugin()
+    with pytest.raises(InvalidPluginConfigError):
+        plugin.validate_config({"target": "http://127.0.0.1", "flags": ["-json"]})
+
+
+def test_nuclei_validate_config_accepts_jsonl_flag() -> None:
+    plugin = NucleiPlugin()
+    plugin.validate_config({"target": "http://127.0.0.1", "flags": ["-jsonl"]})
+
+
+def test_nuclei_command_uses_jsonl_output_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: nuclei v3.3.7 removed ``-json`` (now ``-jsonl``). The plugin
+    must never emit ``-json`` or the binary exits with
+    ``flag provided but not defined: -json``."""
+    plugin = NucleiPlugin()
+
+    def fake_execute(command, timeout_seconds, **kwargs):
+        assert "-json" not in command, f"stale -json flag in {command}"
+        assert "-jsonl" in command
+        return None
+
+    monkeypatch.setattr(plugin, "_execute_subprocess", fake_execute)
+    plugin.execute(
+        {"target": "http://127.0.0.1", "flags": ["-severity"]},
+        timeout_seconds=30,
+    )

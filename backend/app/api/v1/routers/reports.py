@@ -1,11 +1,11 @@
-"""Report endpoints (Milestone 5)."""
+"""Report endpoints (Milestones 5 + 6)."""
 
 from __future__ import annotations
 
 import os
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from app.api.v1.deps import (
@@ -77,6 +77,8 @@ async def generate_version(
     report_id: UUID,
     current_user: User = Depends(get_current_user),
     _member: ProjectMember = Depends(require_scan_launch_permission()),
+    template: str | None = None,
+    redacted: bool = False,
     service: ReportService = Depends(get_report_service),
 ) -> ReportVersion:
     report = await service.get(report_id)
@@ -84,6 +86,8 @@ async def generate_version(
         report_id=report_id,
         project_id=report.project_id,
         generated_by=current_user.id,
+        is_redacted=redacted,
+        template_name=template,
     )
 
 
@@ -112,8 +116,6 @@ async def get_version(
 ) -> ReportVersion:
     version = await service._version_repo.get(version_id)
     if version is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="Report version not found.")
     return version
 
@@ -130,13 +132,9 @@ async def download_version(
 ) -> FileResponse:
     version = await service._version_repo.get(version_id)
     if version is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="Report version not found.")
 
     if not os.path.isfile(version.file_pointer):
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="Report file not found on disk.")
 
     return FileResponse(
@@ -144,3 +142,58 @@ async def download_version(
         media_type="text/markdown",
         filename=f"report_v{version.version_number}.md",
     )
+
+
+# --- M6: New endpoints ---
+
+
+@router.get(
+    "/reports/{report_id}/pdf",
+    summary="Export latest report version as PDF",
+)
+async def export_pdf(
+    report_id: UUID,
+    current_user: User = Depends(get_current_user),
+    _member: ProjectMember = Depends(require_scan_launch_permission()),
+    service: ReportService = Depends(get_report_service),
+) -> FileResponse:
+    report = await service.get(report_id)
+    pdf_path = await service.export_pdf(
+        report_id=report_id,
+        project_id=report.project_id,
+        generated_by=current_user.id,
+    )
+    if not os.path.isfile(pdf_path):
+        raise HTTPException(status_code=500, detail="PDF generation failed.")
+
+    media_type = "application/pdf" if pdf_path.endswith(".pdf") else "text/html"
+    ext = "pdf" if pdf_path.endswith(".pdf") else "html"
+    return FileResponse(
+        path=pdf_path,
+        media_type=media_type,
+        filename=f"report.{ext}",
+    )
+
+
+@router.get(
+    "/report-versions/{version_id_a}/diff/{version_id_b}",
+    summary="Diff two report versions",
+)
+async def diff_versions(
+    version_id_a: UUID,
+    version_id_b: UUID,
+    _member: ProjectMember = Depends(require_report_view_permission()),
+    service: ReportService = Depends(get_report_service),
+) -> dict:
+    return await service.diff_versions(version_id_a, version_id_b)
+
+
+@router.get(
+    "/report-templates",
+    summary="List available report templates",
+)
+async def list_report_templates(
+    _member: ProjectMember = Depends(require_project_role()),
+    service: ReportService = Depends(get_report_service),
+) -> list[str]:
+    return service.available_templates()

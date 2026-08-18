@@ -4,6 +4,9 @@ Reporter service (SRS §8.1, FR-7.5).
 Assembles Explainer + Analyzer output into report-section drafts
 (Executive Summary, per-finding narrative). All AI output is
 visually watermarked as "AI-drafted — pending human review" (FR-7.6).
+
+Milestone 4.5: Graph-aware reporting — uses Knowledge Graph paths
+and relationships to generate richer attack narratives.
 """
 
 from __future__ import annotations
@@ -12,8 +15,12 @@ from uuid import UUID
 
 from app.domain.entities import Finding
 from app.domain.llm_provider import LLMMessage, LLMProvider
-from app.domain.repositories import FindingRepository, ReportRepository
-from app.domain.value_objects import AIOutputReviewStatus
+from app.domain.repositories import (
+    FindingRepository,
+    GraphRepository,
+    ReportRepository,
+)
+from app.domain.value_objects import AIOutputReviewStatus, GraphNodeType
 
 
 class AIReporterService:
@@ -22,6 +29,9 @@ class AIReporterService:
 
     Per SRS FR-7.5: drafts Executive Summary and per-finding narrative
     text for human review/edit before report finalization.
+
+    Milestone 4.5: When a GraphRepository is available, enriches
+    narratives with graph-derived attack paths and blast radius.
     """
 
     def __init__(
@@ -29,10 +39,12 @@ class AIReporterService:
         finding_repo: FindingRepository,
         report_repo: ReportRepository,
         llm_provider: LLMProvider | None = None,
+        graph_repo: GraphRepository | None = None,
     ) -> None:
         self._finding_repo = finding_repo
         self._report_repo = report_repo
         self._llm = llm_provider
+        self._graph_repo = graph_repo
 
     async def draft_executive_summary(
         self,
@@ -59,11 +71,17 @@ class AIReporterService:
         self,
         finding_id: UUID,
     ) -> dict[str, object]:
-        """Draft a narrative section for a specific finding."""
+        """Draft a narrative section for a specific finding.
+
+        Milestone 4.5: Includes graph-derived context such as blast
+        radius and connected assets when available.
+        """
         finding = await self._finding_repo.get(finding_id)
         if finding is None:
             from app.domain.exceptions import FindingNotFoundError
             raise FindingNotFoundError(finding_id)
+
+        graph_context = await self._get_graph_context(finding)
 
         if self._llm is not None:
             prompt = (
@@ -71,8 +89,14 @@ class AIReporterService:
                 f"Title: {finding.title}\n"
                 f"Severity: {finding.severity.value}\n"
                 f"Description: {finding.description or 'No description.'}\n"
-                f"CVSS Score: {finding.cvss_score or 'N/A'}\n\n"
-                "Include sections: Overview, Impact, Technical Details, Remediation.\n"
+                f"CVSS Score: {finding.cvss_score or 'N/A'}\n"
+            )
+            if graph_context:
+                prompt += (
+                    f"\nGraph context:\n{graph_context}\n"
+                )
+            prompt += (
+                "\nInclude sections: Overview, Impact, Technical Details, Remediation.\n"
                 "Respond with JSON: {overview, impact, technical_details, remediation}"
             )
             messages = [LLMMessage(role="user", content=prompt)]
@@ -83,11 +107,13 @@ class AIReporterService:
                 response = await self._llm.complete(messages)
                 data: dict[str, object] = json.loads(response.content)
                 data["review_status"] = AIOutputReviewStatus.AI_DRAFTED.value
+                if graph_context:
+                    data["graph_context"] = graph_context
                 return data
             except Exception:
                 pass
 
-        return {
+        result: dict[str, object] = {
             "overview": f"Finding: {finding.title} (Severity: {finding.severity.value})",
             "impact": (
                 f"This {finding.severity.value} severity finding "
@@ -97,6 +123,51 @@ class AIReporterService:
             "remediation": f"Address the following finding: {finding.title}",
             "review_status": AIOutputReviewStatus.AI_DRAFTED.value,
         }
+        if graph_context:
+            result["graph_context"] = graph_context
+        return result
+
+    async def _get_graph_context(self, finding: Finding) -> str:
+        """Build a graph-context string for the finding narrative."""
+        if self._graph_repo is None:
+            return ""
+
+        finding_node = await self._graph_repo.find_node(
+            finding.project_id,
+            GraphNodeType.FINDING,
+            "findings",
+            finding.id,
+        )
+        if finding_node is None:
+            return ""
+
+        blast = await self._graph_repo.blast_radius(
+            finding.project_id, finding_node.id, max_depth=3
+        )
+        affected_assets = [
+            n for n in blast if n.node_type == GraphNodeType.ASSET
+        ]
+
+        incoming = await self._graph_repo.get_neighbors(
+            finding_node.id, direction="incoming"
+        )
+
+        parts: list[str] = []
+        if affected_assets:
+            asset_labels = [a.label for a in affected_assets[:5]]
+            parts.append(
+                f"Blast radius: {len(affected_assets)} assets affected "
+                f"({', '.join(asset_labels)})"
+            )
+        if incoming:
+            evidence_count = sum(
+                1 for n in incoming
+                if n.node_type == GraphNodeType.EVIDENCE
+            )
+            if evidence_count:
+                parts.append(f"Supporting evidence: {evidence_count} artifacts")
+
+        return "; ".join(parts)
 
     async def _draft_with_llm(
         self,

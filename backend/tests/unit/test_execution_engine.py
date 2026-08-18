@@ -295,6 +295,167 @@ async def test_already_cancelled_scan_is_never_executed(repos, registry, tmp_pat
     assert final.logs_path is None
 
 
+# ---------------------------------------------------------------------------
+# Cancellation race-condition regression tests
+# ---------------------------------------------------------------------------
+
+
+class _CancellingScanRepository(FakeScanRepository):
+    """Fake that cancels the scan at the right moment to trigger the race.
+
+    The engine's final guard calls `get()` one last time before writing
+    `complete()`/`fail()`.  We flip the status to CANCELLED inside that
+    `get()` call, so when the engine checks the returned scan's status,
+    it sees CANCELLED and skips the terminal write.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._get_calls = 0
+        self._cancel_on_get_after_running = False
+
+    async def get(self, scan_id):  # noqa: ANN202
+        result = await super().get(scan_id)
+        if result is None:
+            return result
+        self._get_calls += 1
+        # After the scan is RUNNING and we've had at least 2 get()
+        # calls (initial load + post-plugin re-check), flip it.
+        # This simulates the cancellation arriving during the
+        # normalization/correlation/log-writing window.
+        if (
+            self._cancel_on_get_after_running
+            and result.status is ScanStatus.RUNNING
+            and self._get_calls >= 2
+        ):
+            result.status = ScanStatus.CANCELLED
+        return result
+
+
+@pytest.mark.asyncio
+async def test_cancelled_scan_not_overwritten_by_complete(
+    registry, tmp_path
+):
+    """Regression: a scan cancelled during post-execution work must stay
+    CANCELLED — the engine's final status write must not overwrite it."""
+    project = _make_project()
+    target = _make_target(project.id)
+    record = _make_record(project.id, allowed_targets=[target.value])
+    scan = _make_scan(project.id, [target.id])
+
+    cancel_repo = _CancellingScanRepository()
+    cancel_repo._cancel_on_get_after_running = True
+    await cancel_repo.create(scan)
+
+    repos_local = {
+        "scans": cancel_repo,
+        "projects": FakeProjectRepository(),
+        "targets": FakeTargetRepository(),
+        "authorizations": FakeAuthorizationRecordRepository(),
+        "audit": FakeAuditLogRepository(),
+        "tool_results": FakeToolResultRepository(),
+    }
+    await repos_local["projects"].add(project)
+    await repos_local["targets"].add(target)
+    await repos_local["authorizations"].add(record)
+
+    scope_guard = ScopeGuardService(
+        project_repository=repos_local["projects"],
+        target_repository=repos_local["targets"],
+        authorization_repository=repos_local["authorizations"],
+    )
+    from app.plugins.normalizer_registry import NormalizerRegistry
+
+    engine = ExecutionEngine(
+        scan_repository=repos_local["scans"],
+        scope_guard=scope_guard,
+        plugin_manager=PluginManager(registry),
+        artifact_store=LocalArtifactStore(str(tmp_path)),
+        audit_log_repository=repos_local["audit"],
+        tool_result_repository=repos_local["tool_results"],
+        normalizer_registry=NormalizerRegistry(),
+        default_timeout_seconds=10,
+    )
+
+    await engine.run(scan.id)
+
+    # The engine's final guard catches the CANCELLED status and skips
+    # the complete() call, so the FakeScanRepository's complete()
+    # never fires.  (The cancel-on-terminal flag only triggers if
+    # complete() IS called — confirming the guard works.)
+    final = await cancel_repo.get(scan.id)
+    assert final.status is ScanStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancelled_scan_not_overwritten_by_fail(
+    tmp_path
+):
+    """Same race but the plugin fails (exit_code != 0) and then cancellation
+    lands — must stay CANCELLED, not get overwritten to FAILED."""
+    from app.plugins.normalizer_registry import NormalizerRegistry
+
+    class _FailingPlugin(Plugin):
+        def name(self) -> str:
+            return "echo"
+
+        def description(self) -> str:
+            return "always fails"
+
+        def validate_config(self, config: dict) -> None:  # noqa: ANN001
+            return None
+
+        def execute(self, config: dict, timeout_seconds: int) -> PluginResult:  # noqa: ANN001
+            return PluginResult(
+                success=False, stdout="", stderr="boom", exit_code=1
+            )
+
+    registry = PluginRegistry()
+    registry.register(_FailingPlugin())
+
+    project = _make_project()
+    target = _make_target(project.id)
+    record = _make_record(project.id, allowed_targets=[target.value])
+    scan = _make_scan(project.id, [target.id])
+
+    cancel_repo = _CancellingScanRepository()
+    cancel_repo._cancel_on_get_after_running = True
+    await cancel_repo.create(scan)
+
+    repos_local = {
+        "scans": cancel_repo,
+        "projects": FakeProjectRepository(),
+        "targets": FakeTargetRepository(),
+        "authorizations": FakeAuthorizationRecordRepository(),
+        "audit": FakeAuditLogRepository(),
+        "tool_results": FakeToolResultRepository(),
+    }
+    await repos_local["projects"].add(project)
+    await repos_local["targets"].add(target)
+    await repos_local["authorizations"].add(record)
+
+    scope_guard = ScopeGuardService(
+        project_repository=repos_local["projects"],
+        target_repository=repos_local["targets"],
+        authorization_repository=repos_local["authorizations"],
+    )
+    engine = ExecutionEngine(
+        scan_repository=repos_local["scans"],
+        scope_guard=scope_guard,
+        plugin_manager=PluginManager(registry),
+        artifact_store=LocalArtifactStore(str(tmp_path)),
+        audit_log_repository=repos_local["audit"],
+        tool_result_repository=repos_local["tool_results"],
+        normalizer_registry=NormalizerRegistry(),
+        default_timeout_seconds=10,
+    )
+
+    await engine.run(scan.id)
+
+    final = await cancel_repo.get(scan.id)
+    assert final.status is ScanStatus.CANCELLED
+
+
 @pytest.mark.asyncio
 async def test_missing_scan_is_handled_gracefully(repos, registry, tmp_path):
     """`run()` on a scan_id that doesn't exist must not raise."""

@@ -21,7 +21,7 @@ from typing import Any
 from app.domain.exceptions import InvalidPluginConfigError
 from app.domain.target_validation import validate_target_value
 from app.domain.value_objects import TargetType
-from app.plugins.base import Plugin, PluginResult
+from app.plugins.base import Plugin, PluginCapability, PluginCategory, PluginMetadata, PluginResult
 
 _PORTS_PATTERN = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
 
@@ -159,3 +159,27 @@ class NmapPlugin(Plugin):
             exit_code=result.returncode,
             metadata={"plugin": "nmap", "target": target, "ports": ports, "command": command},
         )
+
+    def capability(self) -> PluginCapability:
+        return PluginCapability(
+            input_asset_types=frozenset({"host", "domain", "cidr"}),
+            output_asset_types=frozenset({"host", "service", "port"}),
+            produces_findings=True,
+            requires_host=True,
+            requires_open_ports=False,
+        )
+
+    def metadata(self) -> PluginMetadata:
+        return PluginMetadata(
+            version="1.0.0",
+            author="SPECTER Team",
+            category=PluginCategory.SCANNING,
+            tags=frozenset({"network", "ports", "service-detection", "os-detection"}),
+            required_binaries=frozenset({"nmap"}),
+            description_long="Port scanner with service/version detection and OS fingerprinting.",
+            timeout_default_seconds=120,
+            timeout_max_seconds=600,
+        )
+
+    def supports_target_type(self, target_type: str) -> bool:
+        return target_type in ("ip", "cidr", "domain")

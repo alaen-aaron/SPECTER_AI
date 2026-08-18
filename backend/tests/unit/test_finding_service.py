@@ -6,10 +6,11 @@ from uuid import uuid4
 import pytest
 
 from app.application.finding_service import FindingService
-from app.domain.entities import Finding, ToolResult
+from app.application.graph_service import GraphService
+from app.domain.entities import Asset, Finding, ToolResult
 from app.domain.exceptions import FindingNotFoundError
-from app.domain.value_objects import FindingStatus, Severity
-from tests.fakes import FakeAssetRepository, FakeFindingRepository
+from app.domain.value_objects import AssetType, FindingStatus, GraphEdgeType, Severity
+from tests.fakes import FakeAssetRepository, FakeFindingRepository, FakeGraphRepository
 
 
 def _make_finding(
@@ -56,6 +57,26 @@ def _make_service(repos) -> FindingService:
         finding_repository=repos["findings"],
         asset_repository=repos["assets"],
     )
+
+
+class _StrictGraphService(GraphService):
+    """Graph service that rejects non-enum relationship types, mirroring the
+    real SqlAlchemyGraphRepository which calls ``.value`` on them."""
+
+    def __init__(self) -> None:
+        super().__init__(FakeGraphRepository())
+        self.edges: list[tuple] = []
+
+    async def add_edge(
+        self, project_id, from_node_id, to_node_id, relationship_type, weight=1.0, **properties
+    ):
+        assert type(relationship_type) is GraphEdgeType, (
+            f"relationship_type must be a GraphEdgeType, got {relationship_type!r}"
+        )
+        self.edges.append((from_node_id, to_node_id, relationship_type))
+        return await super().add_edge(
+            project_id, from_node_id, to_node_id, relationship_type, weight, **properties
+        )
 
 
 @pytest.mark.asyncio
@@ -290,3 +311,49 @@ async def test_update_status_changes_finding_status(repos):
 
     persisted = await service.get(finding.id)
     assert persisted.status is FindingStatus.CONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_create_from_tool_result_projects_edge_with_enum_relationship(repos):
+    """Regression: finding→asset graph edges must use a GraphEdgeType enum,
+    not a raw string (the SQL repo calls ``.value`` on it)."""
+    project_id = uuid4()
+    asset_id = uuid4()
+    await repos["assets"].add(
+        Asset(
+            id=asset_id,
+            project_id=project_id,
+            asset_type=AssetType.HOST,
+            value="10.0.0.1",
+            first_seen=datetime.now(UTC),
+            last_seen=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+        )
+    )
+
+    graph = _StrictGraphService()
+    await graph.upsert_asset_node(project_id, asset_id, "10.0.0.1", asset_type="host")
+    service = FindingService(
+        finding_repository=repos["findings"],
+        asset_repository=repos["assets"],
+        graph_service=graph,
+    )
+
+    tr = _make_tool_result(
+        "nmap",
+        {
+            "target": "10.0.0.1",
+            "ports": [
+                {
+                    "port": 21, "state": "open", "service": "ftp",
+                    "protocol": "tcp", "version": "",
+                },
+            ],
+        },
+    )
+    findings = await service.create_from_tool_result(project_id, tr, asset_id=asset_id)
+
+    assert len(findings) == 1
+    assert len(graph.edges) == 1
+    _, _, rel = graph.edges[0]
+    assert rel is GraphEdgeType.VULNERABLE_TO

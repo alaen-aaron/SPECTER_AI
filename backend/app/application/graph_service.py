@@ -163,3 +163,50 @@ class GraphService:
 
     async def clear_project(self, project_id: UUID) -> None:
         await self._repo.clear_project(project_id)
+
+    async def blast_radius(
+        self, project_id: UUID, node_id: UUID, max_depth: int = 5
+    ) -> list[GraphNode]:
+        """All nodes reachable from a starting node within max_depth hops."""
+        return await self._repo.blast_radius(project_id, node_id, max_depth)
+
+    async def finding_relationships(
+        self, project_id: UUID, finding_id: UUID
+    ) -> dict[str, list[GraphNode]]:
+        """All nodes connected to a finding, grouped by relationship direction."""
+        finding_node = await self._repo.find_node(
+            project_id, GraphNodeType.FINDING, "findings", finding_id
+        )
+        if finding_node is None:
+            return {"outgoing": [], "incoming": []}
+
+        outgoing = await self._repo.get_neighbors(
+            finding_node.id, direction="outgoing"
+        )
+        incoming = await self._repo.get_neighbors(
+            finding_node.id, direction="incoming"
+        )
+        return {"outgoing": outgoing, "incoming": incoming}
+
+    async def graph_summary(self, project_id: UUID) -> dict[str, object]:
+        """Node and edge counts by type for the project."""
+        nodes = await self._repo.list_nodes_for_project(project_id)
+        edges = await self._repo.list_edges_for_project(project_id)
+
+        node_counts: dict[str, int] = {}
+        for node in nodes:
+            key = node.node_type.value
+            node_counts[key] = node_counts.get(key, 0) + 1
+
+        edge_counts: dict[str, int] = {}
+        for edge in edges:
+            key = edge.relationship_type.value
+            edge_counts[key] = edge_counts.get(key, 0) + 1
+
+        return {
+            "project_id": str(project_id),
+            "total_nodes": len(nodes),
+            "total_edges": len(edges),
+            "nodes_by_type": node_counts,
+            "edges_by_type": edge_counts,
+        }

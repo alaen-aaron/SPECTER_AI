@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 from collections import defaultdict, deque
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import structlog
@@ -33,6 +34,10 @@ from app.domain.repositories import (
 from app.domain.value_objects import ScanStatus
 from app.plugins.manager import PluginManager
 from app.plugins.normalizer_registry import NormalizerRegistry
+
+if TYPE_CHECKING:
+    from app.application.asset_service import AssetService
+    from app.application.graph_service import GraphService
 
 logger = structlog.get_logger(__name__)
 
@@ -101,6 +106,8 @@ class WorkflowExecutor:
         tool_result_repository: ToolResultRepository,
         correlation_service: CorrelationService,
         default_timeout_seconds: int = 120,
+        asset_service: AssetService | None = None,
+        graph_service: GraphService | None = None,
     ) -> None:
         self._plugin_manager = plugin_manager
         self._normalizers = normalizer_registry
@@ -110,6 +117,8 @@ class WorkflowExecutor:
         self._tool_results = tool_result_repository
         self._correlation = correlation_service
         self._default_timeout = default_timeout_seconds
+        self._asset_service = asset_service
+        self._graph_service = graph_service
 
     async def execute(self, execution_id: UUID) -> None:
         execution = await self._executions.get(execution_id)
@@ -268,6 +277,18 @@ class WorkflowExecutor:
                             created_at=datetime.now(UTC),
                         )
                         await self._tool_results.add(step_tool_result)
+
+                        # M5.5: Create/update Assets from the ToolResult
+                        if self._asset_service is not None:
+                            try:
+                                await self._asset_service.upsert_from_tool_result(
+                                    project_id, step_tool_result
+                                )
+                            except Exception:  # noqa: BLE001
+                                log.warning(
+                                    "workflow_step_asset_upsert_failed",
+                                    step=step.name,
+                                )
 
                         # Pipeline integration: create Findings from the ToolResult
                         try:

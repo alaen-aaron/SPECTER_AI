@@ -19,9 +19,89 @@ replacement for §7.3's isolation model.
 
 from __future__ import annotations
 
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
+
+
+class PluginCategory(StrEnum):
+    """Functional categories for plugin classification and workflow composition."""
+
+    RECONNAISSANCE = "reconnaissance"
+    SCANNING = "scanning"
+    ENUMERATION = "enumeration"
+    VULNERABILITY = "vulnerability"
+    EXPLOITATION = "exploitation"
+    INFORMATION_GATHERING = "information_gathering"
+    BRUTE_FORCE = "brute_force"
+    REPORTING = "reporting"
+    UTILITY = "utility"
+
+
+@dataclass(frozen=True, slots=True)
+class PluginCapability:
+    """
+    Declares what a plugin consumes and produces.
+
+    Used by the workflow engine to build dependency graphs and validate
+    that plugin chains are coherent (e.g., a vuln scanner that requires
+    open ports must be preceded by a port scanner that produces them).
+    """
+
+    input_asset_types: frozenset[str] = field(default_factory=frozenset)
+    output_asset_types: frozenset[str] = field(default_factory=frozenset)
+    produces_findings: bool = False
+    requires_host: bool = True
+    requires_open_ports: bool = False
+    max_targets: int | None = 1
+
+    def can_accept(self, available_asset_types: frozenset[str]) -> bool:
+        """Check if this plugin can run given available asset types."""
+        if not self.input_asset_types:
+            return True
+        return bool(self.input_asset_types & available_asset_types)
+
+    def is_compatible_with(self, upstream: PluginCapability) -> bool:
+        """Check if an upstream plugin's outputs can feed this plugin's inputs."""
+        if not self.input_asset_types:
+            return True
+        if not upstream.output_asset_types:
+            return True
+        return bool(self.input_asset_types & upstream.output_asset_types)
+
+
+@dataclass(frozen=True, slots=True)
+class PluginMetadata:
+    """
+    Extended metadata for a plugin — versioning, dependencies, categories.
+
+    Stored alongside the plugin instance in the registry for discovery,
+    compatibility checking, and health monitoring.
+    """
+
+    version: str = "1.0.0"
+    author: str = ""
+    category: PluginCategory = PluginCategory.SCANNING
+    tags: frozenset[str] = field(default_factory=frozenset)
+    required_binaries: frozenset[str] = field(default_factory=frozenset)
+    description_long: str = ""
+    min_python_version: str = ""
+    timeout_default_seconds: int = 120
+    timeout_max_seconds: int = 600
+
+    def check_binaries(self) -> list[str]:
+        """Return list of missing required binaries (empty = all present)."""
+        missing: list[str] = []
+        for binary in self.required_binaries:
+            if shutil.which(binary) is None:
+                missing.append(binary)
+        return missing
+
+    def is_healthy(self) -> bool:
+        """Check if all required binaries are available on PATH."""
+        return len(self.check_binaries()) == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,3 +154,30 @@ class Plugin(ABC):
         Only truly exceptional conditions (e.g. the underlying binary
         isn't installed) should raise.
         """
+
+    # --- Capability & metadata (M5 defaults for backward compat) -----
+
+    def capability(self) -> PluginCapability:
+        """
+        Declare input/output asset types and requirements.
+
+        Override in subclasses for workflow composition. Defaults indicate
+        a generic host-scanning plugin that produces findings.
+        """
+        return PluginCapability()
+
+    def metadata(self) -> PluginMetadata:
+        """
+        Extended plugin metadata — version, category, required binaries.
+
+        Override in subclasses. Defaults are minimal/healthy.
+        """
+        return PluginMetadata()
+
+    def health_check(self) -> bool:
+        """Quick health check — are all required binaries available?"""
+        return self.metadata().is_healthy()
+
+    def supports_target_type(self, target_type: str) -> bool:
+        """Whether this plugin can scan the given target type."""
+        return True

@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.ai_reporter_service import AIReporterService
 from app.application.analyzer_service import AnalyzerService
 from app.application.asset_service import AssetService
+from app.application.attack_path_service import AttackPathService
 from app.application.auth_service import (
     LoginService,
     LogoutAllService,
@@ -36,9 +37,13 @@ from app.application.auth_service import (
 from app.application.authorization_service import AuthorizationRecordService
 from app.application.context_memory_service import ContextMemoryService
 from app.application.evidence_service import EvidenceService
+from app.application.executive_intelligence_service import ExecutiveIntelligenceService
 from app.application.explainer_service import ExplainerService
 from app.application.finding_service import FindingService
+from app.application.graph_projector import GraphProjector
 from app.application.graph_service import GraphService
+from app.application.historical_intelligence_service import HistoricalIntelligenceService
+from app.application.impact_analysis_service import ImpactAnalysisService
 from app.application.organization_service import OrganizationService
 from app.application.planner_service import PlannerService
 from app.application.project_service import ProjectService
@@ -113,6 +118,7 @@ from app.infrastructure.security.jwt import (
 from app.infrastructure.security.password_hasher import hash_password, verify_password
 from app.infrastructure.security.tokens import generate_refresh_token, hash_refresh_token
 from app.plugins.manager import PluginManager
+from app.plugins.registry import PluginRegistry
 from app.plugins.registry import registry as plugin_registry
 
 # --- Tier 1: repositories ----------------------------------------------------
@@ -320,6 +326,16 @@ def get_plugin_manager() -> PluginManager:
     return PluginManager(plugin_registry)
 
 
+def get_plugin_registry() -> PluginRegistry:
+    """
+    Returns the process-wide plugin registry.
+    Ensures built-in plugins are registered first.
+    """
+    import app.plugins.builtin  # noqa: F401 - side-effect import
+
+    return plugin_registry
+
+
 def get_scan_task_dispatcher() -> ScanTaskDispatcher:
     return CeleryScanTaskDispatcher()
 
@@ -365,6 +381,10 @@ def get_report_service(
         get_report_version_repository
     ),
     finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+    scan_repo: SqlAlchemyScanRepository = Depends(get_scan_repository),
+    target_repo: SqlAlchemyTargetRepository = Depends(get_target_repository),
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
     settings: Settings = Depends(get_settings),
 ) -> ReportService:
     return ReportService(
@@ -372,6 +392,10 @@ def get_report_service(
         report_version_repository=report_version_repo,
         finding_repository=finding_repo,
         artifacts_dir=str(settings.SCAN_ARTIFACTS_DIR),
+        asset_repository=asset_repo,
+        scan_repository=scan_repo,
+        target_repository=target_repo,
+        graph_repository=graph_repo,
     )
 
 
@@ -379,6 +403,15 @@ def get_graph_service(
     graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
 ) -> GraphService:
     return GraphService(graph_repo)
+
+
+def get_graph_projector(
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    evidence_repo: SqlAlchemyEvidenceRepository = Depends(get_evidence_repository),
+) -> GraphProjector:
+    return GraphProjector(graph_repo, asset_repo, finding_repo, evidence_repo)
 
 
 def get_workflow_task_dispatcher() -> WorkflowTaskDispatcher:
@@ -437,19 +470,22 @@ def get_planner_service(
     context_memory_repo: SqlAlchemyAIContextMemoryRepository = Depends(
         get_ai_context_memory_repository
     ),
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
 ) -> PlannerService:
     return PlannerService(
         planned_action_repo=action_repo,
         finding_repo=finding_repo,
         asset_repo=asset_repo,
         context_memory_repo=context_memory_repo,
+        graph_repo=graph_repo,
     )
 
 
 def get_analyzer_service(
     finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
 ) -> AnalyzerService:
-    return AnalyzerService(finding_repo=finding_repo)
+    return AnalyzerService(finding_repo=finding_repo, graph_repo=graph_repo)
 
 
 def get_risk_engine_service(
@@ -464,17 +500,20 @@ def get_risk_engine_service(
 
 def get_explainer_service(
     finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
 ) -> ExplainerService:
-    return ExplainerService(finding_repo=finding_repo)
+    return ExplainerService(finding_repo=finding_repo, graph_repo=graph_repo)
 
 
 def get_ai_reporter_service(
     finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
     report_repo: SqlAlchemyReportRepository = Depends(get_report_repository),
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
 ) -> AIReporterService:
     return AIReporterService(
         finding_repo=finding_repo,
         report_repo=report_repo,
+        graph_repo=graph_repo,
     )
 
 
@@ -492,6 +531,76 @@ def get_prompt_library_service(
     ),
 ) -> PromptLibraryService:
     return PromptLibraryService(template_repo=template_repo)
+
+
+# --- Intelligence Services (Milestone 4.5) ---------------------------------
+
+
+def get_attack_path_service(
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
+) -> AttackPathService:
+    return AttackPathService(graph_repo=graph_repo)
+
+
+def get_impact_analysis_service(
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    evidence_repo: SqlAlchemyEvidenceRepository = Depends(get_evidence_repository),
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+) -> ImpactAnalysisService:
+    return ImpactAnalysisService(
+        graph_repo=graph_repo,
+        finding_repo=finding_repo,
+        evidence_repo=evidence_repo,
+        asset_repo=asset_repo,
+    )
+
+
+def get_historical_intelligence_service(
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    scan_repo: SqlAlchemyScanRepository = Depends(get_scan_repository),
+) -> HistoricalIntelligenceService:
+    return HistoricalIntelligenceService(
+        graph_repo=graph_repo,
+        asset_repo=asset_repo,
+        finding_repo=finding_repo,
+        scan_repo=scan_repo,
+    )
+
+
+def get_executive_intelligence_service(
+    graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+    scan_repo: SqlAlchemyScanRepository = Depends(get_scan_repository),
+) -> ExecutiveIntelligenceService:
+    return ExecutiveIntelligenceService(
+        graph_repo=graph_repo,
+        finding_repo=finding_repo,
+        asset_repo=asset_repo,
+        scan_repo=scan_repo,
+    )
+
+
+# --- Workflow Suggestion Service (Milestone 5) --------------------------------
+
+
+def get_workflow_suggestion_service() -> object:
+    """
+    Wire the WorkflowSuggestionService with plugin registry and repos.
+    Uses lazy imports to avoid circular dependency issues.
+    """
+    import app.plugins.builtin  # noqa: F401 - side-effect import
+    from app.application.workflow_suggestion_service import WorkflowSuggestionService
+
+    return WorkflowSuggestionService(
+        plugin_registry=plugin_registry,
+        finding_repo=SqlAlchemyFindingRepository(None),  # type: ignore[arg-type]
+        asset_repo=SqlAlchemyAssetRepository(None),  # type: ignore[arg-type]
+        planned_action_repo=SqlAlchemyPlannedActionRepository(None),  # type: ignore[arg-type]
+    )
 
 
 # --- Tier 3: authentication + RBAC --------------------------------------------

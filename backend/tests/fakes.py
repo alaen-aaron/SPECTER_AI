@@ -47,6 +47,7 @@ from app.domain.entities import (
 )
 from app.domain.value_objects import (
     AssetType,
+    AuthorizationStatus,
     FindingStatus,
     GraphEdgeType,
     GraphNodeType,
@@ -237,9 +238,22 @@ class FakeAuthorizationRecordRepository:
         candidates = [
             r
             for r in self._records.values()
-            if r.project_id == project_id and r.authorized_from <= on_date.date() <= r.authorized_to
+            if r.project_id == project_id
+            and r.status == AuthorizationStatus.ACTIVE
+            and r.authorized_from <= on_date.date() <= r.authorized_to
         ]
         return candidates[0] if candidates else None
+
+    async def list_active_for_project(
+        self, project_id: UUID, on_date: datetime
+    ) -> list[AuthorizationRecord]:
+        return [
+            r
+            for r in self._records.values()
+            if r.project_id == project_id
+            and r.status == AuthorizationStatus.ACTIVE
+            and r.authorized_from <= on_date.date() <= r.authorized_to
+        ]
 
     async def list_for_project(self, project_id: UUID) -> list[AuthorizationRecord]:
         return [r for r in self._records.values() if r.project_id == project_id]
@@ -673,6 +687,34 @@ class FakeGraphRepository:
         self._nodes = {
             nid: n for nid, n in self._nodes.items() if n.project_id != project_id
         }
+
+    async def blast_radius(
+        self,
+        project_id: UUID,
+        start_node_id: UUID,
+        max_depth: int = 5,
+    ) -> list[GraphNode]:
+        """BFS traversal returning all reachable nodes from start_node_id."""
+        from collections import deque
+
+        visited: set[UUID] = set()
+        result: list[GraphNode] = []
+        queue: deque[tuple[UUID, int]] = deque([(start_node_id, 0)])
+
+        while queue:
+            current, depth = queue.popleft()
+            if current in visited or depth > max_depth:
+                continue
+            visited.add(current)
+            node = self._nodes.get(current)
+            if node is not None:
+                if current != start_node_id:
+                    result.append(node)
+                for edge in self._edges.values():
+                    if edge.from_node_id == current and edge.to_node_id not in visited:
+                        queue.append((edge.to_node_id, depth + 1))
+
+        return result
 
 
 class FakeWorkflowRepository:

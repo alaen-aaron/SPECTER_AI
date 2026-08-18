@@ -39,9 +39,14 @@ async def _execute_scan(scan_id: UUID) -> None:
 
     import app.plugins.builtin  # noqa: F401 - side-effect import, registers built-in plugins
     import app.plugins.normalizers  # noqa: F401 - side-effect import, registers normalizers
+    from app.application.asset_service import AssetService
     from app.application.correlation_service import CorrelationService
+    from app.application.graph_service import GraphService
     from app.application.scope_guard_service import ScopeGuardService
     from app.core.config import get_settings
+    from app.infrastructure.db.repositories.asset_repository import (
+        SqlAlchemyAssetRepository,
+    )
     from app.infrastructure.db.repositories.audit_log_repository import (
         SqlAlchemyAuditLogRepository,
     )
@@ -50,6 +55,9 @@ async def _execute_scan(scan_id: UUID) -> None:
     )
     from app.infrastructure.db.repositories.finding_repository import (
         SqlAlchemyFindingRepository,
+    )
+    from app.infrastructure.db.repositories.graph_repository import (
+        SqlAlchemyGraphRepository,
     )
     from app.infrastructure.db.repositories.project_repository import SqlAlchemyProjectRepository
     from app.infrastructure.db.repositories.scan_repository import SqlAlchemyScanRepository
@@ -80,13 +88,11 @@ async def _execute_scan(scan_id: UUID) -> None:
 
     try:
         async with session_factory() as session:
-            import logging
-
-            _log = logging.getLogger(__name__)
-            _log.warning(
-                "CELERY_DEBUG: _execute_scan started for scan_id=%s, "
-                "correlation_service WILL be injected",
-                scan_id,
+            graph_repo = SqlAlchemyGraphRepository(session)
+            graph_service = GraphService(graph_repo)
+            asset_service = AssetService(
+                asset_repository=SqlAlchemyAssetRepository(session),
+                graph_service=graph_service,
             )
             execution_engine = ExecutionEngine(
                 scan_repository=SqlAlchemyScanRepository(session),
@@ -104,24 +110,11 @@ async def _execute_scan(scan_id: UUID) -> None:
                 correlation_service=CorrelationService(
                     SqlAlchemyFindingRepository(session)
                 ),
-            )
-            _log.warning(
-                "CELERY_DEBUG: correlation_service=%s, "
-                "correlation_enabled=%s",
-                type(execution_engine._correlation).__name__,
-                execution_engine._correlation is not None,
+                asset_service=asset_service,
+                graph_service=graph_service,
             )
             await execution_engine.run(scan_id)
-            _log.warning(
-                "CELERY_DEBUG: execution_engine.run() completed, "
-                "about to commit session for scan_id=%s",
-                scan_id,
-            )
             await session.commit()
-            _log.warning(
-                "CELERY_DEBUG: session committed for scan_id=%s",
-                scan_id,
-            )
     finally:
         await engine.dispose()
 
@@ -148,11 +141,19 @@ async def _execute_workflow(execution_id: UUID) -> None:
 
     import app.plugins.builtin  # noqa: F401
     import app.plugins.normalizers  # noqa: F401
+    from app.application.asset_service import AssetService
     from app.application.correlation_service import CorrelationService
+    from app.application.graph_service import GraphService
     from app.application.workflow_executor import WorkflowExecutor
     from app.core.config import get_settings
+    from app.infrastructure.db.repositories.asset_repository import (
+        SqlAlchemyAssetRepository,
+    )
     from app.infrastructure.db.repositories.finding_repository import (
         SqlAlchemyFindingRepository,
+    )
+    from app.infrastructure.db.repositories.graph_repository import (
+        SqlAlchemyGraphRepository,
     )
     from app.infrastructure.db.repositories.scan_repository import (
         SqlAlchemyScanRepository,
@@ -174,6 +175,12 @@ async def _execute_workflow(execution_id: UUID) -> None:
 
     try:
         async with session_factory() as session:
+            graph_repo = SqlAlchemyGraphRepository(session)
+            graph_service = GraphService(graph_repo)
+            asset_service = AssetService(
+                asset_repository=SqlAlchemyAssetRepository(session),
+                graph_service=graph_service,
+            )
             executor = WorkflowExecutor(
                 plugin_manager=PluginManager(registry),
                 normalizer_registry=normalizer_registry,
@@ -185,6 +192,8 @@ async def _execute_workflow(execution_id: UUID) -> None:
                     SqlAlchemyFindingRepository(session)
                 ),
                 default_timeout_seconds=settings.SCAN_DEFAULT_TIMEOUT_SECONDS,
+                asset_service=asset_service,
+                graph_service=graph_service,
             )
             try:
                 await executor.execute(execution_id)

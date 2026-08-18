@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from app.domain.entities import Asset, ToolResult
 from app.domain.exceptions import AssetNotFoundError
 from app.domain.repositories import AssetRepository
-from app.domain.value_objects import AssetType
+from app.domain.value_objects import AssetType, GraphEdgeType
 
 if TYPE_CHECKING:
     from app.application.graph_service import GraphService
@@ -116,7 +116,7 @@ class AssetService:
                             project_id,
                             host_node.id,
                             svc_node.id,
-                            "hosts",
+                            GraphEdgeType.HOSTS,
                         )
                         break
 

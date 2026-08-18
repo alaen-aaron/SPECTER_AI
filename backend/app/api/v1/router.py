@@ -18,7 +18,9 @@ from app.api.v1.routers import (
     findings,
     graph,
     health,
+    intelligence,
     organizations,
+    plugins,
     projects,
     reports,
     scans,
@@ -40,6 +42,8 @@ api_v1_router.include_router(findings.router)
 api_v1_router.include_router(evidence.router)
 api_v1_router.include_router(reports.router)
 api_v1_router.include_router(graph.router)
+api_v1_router.include_router(intelligence.router)
 api_v1_router.include_router(workflows.router)
 api_v1_router.include_router(schedules.router)
 api_v1_router.include_router(ai_engine.router)
+api_v1_router.include_router(plugins.router)

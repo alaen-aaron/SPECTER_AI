@@ -15,7 +15,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.error_handlers import register_error_handlers
+from app.api.v1.middleware import ObservabilityMiddleware
 from app.api.v1.router import api_v1_router
+from app.api.v1.routers import metrics as metrics_router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 
@@ -63,8 +65,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(ObservabilityMiddleware)
 
     app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
+    app.include_router(metrics_router.router, prefix=settings.API_V1_PREFIX)
     register_error_handlers(app)
 
     return app

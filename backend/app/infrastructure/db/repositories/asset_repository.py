@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession as SqlAsyncSession
+from sqlalchemy.sql.dml import ReturningInsert
 
 from app.domain.entities import Asset
 from app.domain.value_objects import AssetType
@@ -26,6 +27,49 @@ def _to_entity(row: AssetModel) -> Asset:
         source_scan_id=row.source_scan_id,
         metadata=dict(row.metadata_ or {}),
         created_at=row.created_at,
+    )
+
+
+def _build_upsert_statement(asset: Asset, now: datetime) -> ReturningInsert[tuple[AssetModel]]:
+    """
+    Build the PostgreSQL `INSERT ... ON CONFLICT DO UPDATE` used by
+    `upsert()`.
+
+    The `metadata` key MUST be referenced as the mapped attribute
+    (`AssetModel.metadata_`), never as a bare string:
+      - the string `"metadata_"` is treated literally by
+        `on_conflict_do_update(set_=...)` and emits `SET metadata_ = ...`
+        (the DB column is named `metadata`) → UndefinedColumnError;
+      - the string `"metadata"` collides with `DeclarativeBase.metadata`
+        (a `MetaData` instance) when used as a `.values()` key.
+    Using the attribute object works in both clauses and keeps the
+    Python attribute name `metadata_`.
+    """
+    return (
+        pg_insert(AssetModel)
+        .values(
+            {
+                AssetModel.id: asset.id,
+                AssetModel.project_id: asset.project_id,
+                AssetModel.asset_type: asset.asset_type.value,
+                AssetModel.value: asset.value,
+                AssetModel.first_seen: now,
+                AssetModel.last_seen: now,
+                AssetModel.in_scope: asset.in_scope,
+                AssetModel.source_scan_id: asset.source_scan_id,
+                AssetModel.metadata_: asset.metadata,
+            }
+        )
+        .on_conflict_do_update(
+            index_elements=["project_id", "asset_type", "value"],
+            set_={
+                "last_seen": now,
+                "source_scan_id": asset.source_scan_id,
+                AssetModel.metadata_: asset.metadata,
+                "in_scope": asset.in_scope,
+            },
+        )
+        .returning(AssetModel)
     )
 
 
@@ -83,30 +127,7 @@ class SqlAlchemyAssetRepository:
         """Insert or update: if an asset with the same (project_id,
         asset_type, value) exists, update its last_seen and metadata."""
         now = datetime.now(UTC)
-        stmt = (
-            pg_insert(AssetModel)
-            .values(
-                id=asset.id,
-                project_id=asset.project_id,
-                asset_type=asset.asset_type.value,
-                value=asset.value,
-                first_seen=now,
-                last_seen=now,
-                in_scope=asset.in_scope,
-                source_scan_id=asset.source_scan_id,
-                metadata_=asset.metadata,
-            )
-            .on_conflict_do_update(
-                index_elements=["project_id", "asset_type", "value"],
-                set_={
-                    "last_seen": now,
-                    "source_scan_id": asset.source_scan_id,
-                    "metadata_": asset.metadata,
-                    "in_scope": asset.in_scope,
-                },
-            )
-            .returning(AssetModel)
-        )
+        stmt = _build_upsert_statement(asset, now)
         result = await self._session.execute(stmt)
         row = result.scalar_one()
         await self._session.flush()

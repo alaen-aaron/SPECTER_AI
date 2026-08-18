@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.plugins.base import Plugin, PluginResult
+from app.plugins.base import Plugin, PluginCapability, PluginCategory, PluginMetadata, PluginResult
 
 
 class EchoPlugin(Plugin):
@@ -30,4 +30,23 @@ class EchoPlugin(Plugin):
             exit_code=0,
             artifacts=[],
             metadata={"plugin": "echo"},
+        )
+
+    def capability(self) -> PluginCapability:
+        return PluginCapability(
+            input_asset_types=frozenset(),
+            output_asset_types=frozenset(),
+            produces_findings=False,
+            requires_host=False,
+            requires_open_ports=False,
+        )
+
+    def metadata(self) -> PluginMetadata:
+        return PluginMetadata(
+            version="1.0.0",
+            author="SPECTER Team",
+            category=PluginCategory.UTILITY,
+            tags=frozenset({"demo", "testing"}),
+            required_binaries=frozenset(),
+            description_long="Demonstration plugin for testing the execution pipeline.",
         )
