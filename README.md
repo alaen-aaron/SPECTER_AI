@@ -7,35 +7,54 @@ for the full, frozen Software Requirements Specification.
 
 > ⚠️ SPECTER_AI is a control plane over existing open-source security tools.
 > It is not a scanner itself, and it must never be pointed at systems you are
-> not explicitly authorized to test.
+> not explicitly authorized to test. Every scan is re-validated against
+> Scope Guard at execution time, not just at launch.
 
 ## Status
 
-**Milestone 3 — Scan Execution Engine & Plugin Framework**, built on top of
-the frozen Milestone 1 bootstrap and Milestone 2 identity/platform
-foundation (both unchanged except for the additive integration points
-detailed in [Scan Execution (Milestone 3)](#scan-execution-milestone-3)
-below). Implemented: a `Scan` aggregate with a full lifecycle (queued →
-running → completed/failed/cancelled), a self-registering plugin
-framework (`echo`, `ping`, `nmap` — all subprocess-based, list-args
-only, no shell, mandatory timeouts), a `PluginManager` + `PluginRegistry`,
-an `ExecutionEngine` that Scope-Guard-revalidates every scan immediately
-before running it (not just at launch time), real Celery background
-execution, and a Scan API gated by RBAC and Scope Guard with no bypass
-path. The AI Planner, Knowledge Graph population, Workflow Engine, and
-Reporting remain out of scope — those are later phases per the frozen SRS.
+**Milestones 1–6 complete** on top of the frozen Milestone 1–2 foundation:
+identity + RBAC, Scan Execution Engine & Plugin Framework, output
+normalization + correlation, Knowledge Graph + graph intelligence, the
+production plugin ecosystem + workflow/scheduling engine, and Report
+Generation. The platform is validated end-to-end against a real live target
+(OWASP Juice Shop) — see [Live pipeline validation](#live-pipeline-validation).
+
+Verification status:
+
+- **Backend tests:** 585 passed, 12 skipped (`cd backend && pytest`)
+- **E2E API verification:** 75/75 checks pass (`backend/test_e2e_api.py`)
+- **Live pipeline:** nmap → whatweb → httpx → nuclei against Juice Shop
+  produced deduplicated assets, correlated findings, a knowledge-graph edge,
+  and a finalized, downloadable report
 
 Run `make verify` (or `scripts/verify.sh` / `scripts/verify.ps1` on Windows)
 for a full environment/stack health report.
+
+## What's implemented by milestone
+
+| Milestone | Scope | Status |
+|---|---|---|
+| M1 | Auth (JWT + refresh rotation), orgs, RBAC, projects, targets, Scope Guard, audit log | ✅ |
+| M2 | Scan service, Celery async execution, artifact storage (local + MinIO) | ✅ |
+| M3 | Plugin framework, scope-guard re-validation at runtime, normalizers, finding/asset correlation + dedup | ✅ |
+| M4 | Knowledge Graph (nodes/edges, blast radius, graph API), graph projector | ✅ |
+| M4.5 | Graph intelligence: attack paths, impact/blast-radius, historical & executive intelligence | ✅ |
+| M5 | 19 plugins, capability/metadata system, workflow templates + conditional engine, plugin API | ✅ |
+| M5.5 | Workflow execution engine, schedules, AI/reporter integration, observability (metrics, health) | ✅ |
+| M6 | Report generation: templates, versioning, redaction, finalize, download (Markdown) | ✅ |
+
+Planned next: **M7** — autonomous orchestration on top of the validated
+scan → evidence → report workflow (per-plugin container isolation, AI-driven
+planning/execution, and advanced cross-tool correlation remain follow-ups).
 
 ## Stack
 
 | Layer | Technology |
 |---|---|
-| Backend | FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2, Celery |
+| Backend | FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2, Celery (+ beat) |
 | Frontend | React, TypeScript, Vite, TailwindCSS, React Query, React Router |
 | Data | PostgreSQL, Redis, MinIO |
-| Infra | Docker Compose, GitHub Actions |
+| Infra | Docker Compose |
 
 ## Quickstart
 
@@ -54,8 +73,8 @@ make migrate
 Once running:
 
 - Frontend: <http://localhost:5173>
-- API health check: <http://localhost:8000/api/v1/health>
-- API interactive docs: <http://localhost:8000/docs>
+- API health check: <http://localhost:9002/api/v1/health>
+- API interactive docs: <http://localhost:9002/docs>
 - MinIO console: <http://localhost:9001> (user/pass: `specter` / `specter-secret`)
 
 Stop everything with `make down`.
@@ -63,14 +82,17 @@ Stop everything with `make down`.
 ## Common commands
 
 ```bash
-make up               # start the full stack
-make down              # stop and remove containers
+make up                 # start the full stack
+make down               # stop and remove containers
 make logs               # tail all service logs
-make lint                # ruff + mypy (backend), eslint (frontend)
-make format               # black + ruff --fix (backend), prettier (frontend)
-make test                 # backend pytest suite
-make shell-api             # shell into the api container
-make shell-db                # psql shell into postgres
+make verify             # full environment/stack health check
+make lint               # ruff + mypy (backend), eslint (frontend)
+make format             # black + ruff --fix (backend), prettier (frontend)
+make test               # backend pytest suite
+make migrate            # apply alembic migrations
+make makemigration m="msg"  # autogenerate a migration
+make shell-api          # shell into the api container
+make shell-db           # psql shell into postgres
 ```
 
 See `Makefile` for the complete list.
@@ -82,8 +104,8 @@ specter-ai/
 ├── backend/            FastAPI app (Clean Architecture: api/application/domain/infrastructure)
 ├── frontend/           React + Vite + TypeScript
 ├── infra/              docker-compose.yml
-├── .github/workflows/  CI pipeline
-└── docs/               SRS and other design documents
+├── docs/               SRS and other design documents
+└── scripts/            verify.sh / verify.ps1 / doctor.py
 ```
 
 Backend internal layering follows Clean Architecture (SRS §10.1):
@@ -92,8 +114,13 @@ Backend internal layering follows Clean Architecture (SRS §10.1):
 api/            → FastAPI routers, request/response schemas — no business logic
 application/    → use-case services
 domain/         → entities, value objects, repository interfaces — zero framework imports
-infrastructure/ → SQLAlchemy repositories, Celery tasks, LLM adapters, storage adapters
+infrastructure/ → SQLAlchemy repositories, Celery tasks, storage adapters, execution engine
+plugins/        → plugin base class, registry, normalizers, 19 built-in plugins
 ```
+
+**Critical dependency rule:** `domain/` never imports `infrastructure/`,
+`api/`, or `application/`; `application/` imports only `domain/` interfaces —
+never Celery, SQLAlchemy, or plugin classes directly.
 
 ## Local development without Docker (backend)
 
@@ -114,147 +141,112 @@ npm install
 npm run dev
 ```
 
+## Plugins
+
+Every plugin subclasses `app.plugins.base.Plugin` and self-registers onto the
+process-wide `PluginRegistry` via `app.plugins.builtin`. All subprocess
+invocations use list-form arguments (`shell=False`), an explicit timeout, and
+allow-listed flags only.
+
+| Category | Plugins |
+|---|---|
+| Reconnaissance | `subfinder`, `httpx`, `dnsx`, `naabu`, `katana` |
+| Information Gathering | `whatweb`, `sslscan` |
+| Enumeration | `gobuster` |
+| Vulnerability | `nuclei`, `nikto`, `sqlmap`, `dalfox`, `wpscan`, `ffuf` |
+| Secrets | `trufflehog`, `gitleaks` |
+| Core | `echo`, `ping`, `nmap` |
+
+Security properties, enforced by construction (not by catching bad inputs):
+
+- `nmap`/`nuclei` etc. use **allow-lists** for flags — file-writing flags
+  (`-oN`/`-oX`/`-oG`/`-oA`) and script execution (`--script`) are never permitted.
+- Targets are validated against the same IP/CIDR/domain/URL parsers used by
+  the `Target` model before any subprocess runs.
+- Every subprocess has a mandatory timeout and never uses a shell string.
+
+## Output normalization & correlation
+
+Each scan's raw stdout is parsed by a `ToolOutputNormalizer` registered per
+plugin into a structured `normalized_payload`:
+
+| Normalizer | Plugin | Produces |
+|---|---|---|
+| `ping_normalizer` | ping | host reachability stats |
+| `nmap_normalizer` | nmap | target, host_up, ports, counts |
+| `nuclei_normalizer` | nuclei | target + `vulnerabilities[]` (template_id/title/severity) |
+
+Correlation (`app/application/correlation_service.py`) turns normalized output
+into deduplicated **assets** (host/service/technology) and **findings**
+(dedup_key-based), then projects both into the **Knowledge Graph**
+(asset nodes + `hosts`/`vulnerable_to` edges). Evidence can be attached to any
+finding and is surfaced in generated reports.
+
+## API surface (v1)
+
+| Area | Endpoints |
+|---|---|
+| Auth | register, login, refresh, logout, logout-all, me |
+| Organizations / projects / members | CRUD + RBAC |
+| Targets / authorization / scope-check | in-scope enforcement |
+| Scans | launch, list, get, soft-cancel |
+| Findings | list, get, create, update status |
+| Evidence | upload/list by finding, get, download |
+| Graph | summary, nodes, edges, blast-radius, attack paths, rebuild |
+| Plugins | catalog, metadata, capabilities, health |
+| Reports | create, list, get, generate version, finalize, download, templates |
+| Workflows / schedules | templates, run, executions, schedules (cron/once/hourly/daily/weekly) |
+| Intelligence / AI | planner, analyzer, reporter, explainer, executive intelligence, metrics |
+
+Every error maps to RFC 7807 Problem Details (`app/api/v1/error_handlers.py`).
+
+## Live pipeline validation
+
+Validated the full real-world workflow against OWASP Juice Shop
+(`infra_default` network), driving everything through the API — no host-side
+tools:
+
+```
+scope-check → queued scan → Celery worker → real binary → normalizer
+→ ToolResult persisted → deduplicated assets → correlated findings
+→ knowledge-graph edge → evidence → finalized report (downloadable Markdown)
+```
+
+- **nmap / whatweb / httpx / nuclei** scans all completed (`exit_code=0`)
+- Assets: host `172.18.0.9`, service `ppp?://172.18.0.9:3000/tcp`
+- Findings: *Prometheus Metrics - Detect* (MEDIUM, nuclei), *Open port* (INFO, nmap)
+- Graph: 3 nodes, 1 `hosts` edge · Report: generated + finalized + downloaded
+
+Genuine defects found and fixed during validation (with regression tests):
+
+1. Graph edge projection passed raw strings instead of `GraphEdgeType` enums
+   (`'str' object has no attribute 'value'`) — fixed in `asset_service.py`
+   and `finding_service.py`.
+2. The Python `httpx` package's console script overwrote the ProjectDiscovery
+   Go binary in the Docker image — the image now re-copies the Go binary
+   after `pip install`.
+3. nuclei v3.3.7 removed `-json` (now `-jsonl`) — plugin + allow-list updated.
+4. Missing nuclei normalizer meant nuclei findings could never materialize —
+   added `nuclei_normalizer.py`.
+
+## Testing
+
+```bash
+cd backend && pytest            # 585 passed, 12 skipped
+cd backend && pytest tests/unit/            # unit tests
+cd backend && pytest tests/integration/     # integration tests
+cd backend && python test_e2e_api.py        # 75/75 full API verification
+```
+
+Pre-commit hooks (ruff, black, mypy, eslint, prettier) run on every clone;
+install once with `pre-commit install`.
+
 ## Contributing
 
 - Conventional Commits for commit messages.
-- Run `pre-commit install` once per clone to enable local hooks (ruff, black,
-  mypy, eslint, prettier).
-- All PRs go through the `CI` workflow (`.github/workflows/ci.yml`) before merge.
-
-## Scan Execution (Milestone 3)
-
-### Architecture
-
-```
-                     API (FastAPI router)
-                            │
-                            │  never executes tools directly
-                            ▼
-                     ScanService (application/)
-                            │
-              ┌─────────────┴─────────────┐
-              ▼                           ▼
-      ScopeGuardService            PluginManager.validate()
-    (project active, auth           (fails fast on bad
-     valid, target in scope)         plugin config)
-              │
-              ▼
-      Scan row persisted (status=queued)
-              │
-              ▼
-      ScanTaskDispatcher.dispatch(scan_id)   ◄── Protocol; application/
-              │                                   never imports Celery
-              ▼
-      Celery task: execute_scan_task(scan_id)
-              │
-              ▼
-      ExecutionEngine.run(scan_id)            (infrastructure/execution/)
-              │
-              │  re-validates Scope Guard HERE too — a scan can sit
-              │  queued for a while; authorization can change in that
-              │  window, so trusting the enqueue-time check alone
-              │  would be a real bypass, not an optimization.
-              ▼
-      PluginManager.run(plugin, config, timeout)
-              │
-              ▼
-      Plugin.execute()  →  subprocess.run([...], shell=False, timeout=N)
-              │
-              ▼
-      PluginResult(success, stdout, stderr, exit_code, artifacts)
-              │
-              ▼
-      LocalArtifactStore.write_logs()  +  ScanRepository.complete()/fail()
-              │
-              ▼
-      AuditLogRepository.add()  (scan.started / scan.completed / scan.failed)
-```
-
-Every arrow above is a real dependency, not aspirational — `ScanService`
-has no import of `subprocess`, `celery`, or any plugin class; `Plugin`
-implementations have no import of SQLAlchemy or FastAPI.
-
-### Plugin architecture
-
-Every plugin is a subclass of `app.plugins.base.Plugin` with four methods:
-`name()`, `description()`, `validate_config(config)`, `execute(config,
-timeout_seconds)`. Plugins self-register onto a process-wide
-`PluginRegistry` (`app/plugins/registry.py`) by being imported once, via
-`app.plugins.builtin` — importing that module is the only thing that
-needs to happen for a plugin to become available.
-
-Built-in plugins (`app/plugins/`):
-
-| Plugin | What it does | Config |
-|---|---|---|
-| `echo` | Returns a fixed string. No subprocess at all — proves the pipeline end-to-end. | none |
-| `ping` | `ping -c 4 -W 2 <hostname>` | `{"hostname": "10.0.0.5"}` |
-| `nmap` | `nmap [allow-listed flags] -p <ports> --host-timeout <ms> <target>` | `{"target": "...", "ports": "22,80", "arguments": ["-sV"]}` |
-
-**Security properties, not just conventions:**
-- Every subprocess call uses list-form arguments (`subprocess.run([...])`), never a shell string, and never `shell=True`.
-- Every subprocess call passes an explicit `timeout`.
-- `ping`'s `hostname` and `nmap`'s `target` are validated against the same IP/CIDR/domain parsers Milestone 2's Target model uses — before any subprocess is ever spawned.
-- `nmap`'s `arguments` field is an **allow-list**, not a blocklist: only value-less scan-behavior flags (`-sV`, `-sC`, `-Pn`, `-T4`, ...) are permitted. File-writing flags (`-oN`/`-oX`/`-oG`/`-oA`), arbitrary script execution (`--script`), and file-based target input (`-iL`/`-iR`) are never on that list, so no combination of allowed flags can write a file or run arbitrary code — this is enforced by construction, not by trying to catch every dangerous flag individually.
-
-**Scope note:** plugins currently run as validated subprocesses inside the
-`worker` container, not yet in one ephemeral container per invocation
-(the frozen SRS's full §7.3 isolation model). That remains a real,
-larger follow-up — this milestone's spec asked for the plugin
-interface and safe subprocess execution, not container orchestration
-from the Celery worker.
-
-### Execution lifecycle
-
-```
-queued → running → completed
-                  → failed
-queued           → cancelled   (soft — see below)
-running          → cancelled   (soft — see below)
-```
-
-1. `POST /projects/{id}/scans` validates Scope Guard + plugin config, persists the `Scan` row as `queued`, and dispatches a Celery task. The API response returns immediately — nothing blocks on actual tool execution.
-2. The Celery worker picks up the task, re-validates Scope Guard (defense in depth), flips the scan to `running`, and calls the plugin.
-3. On success: `stdout`/`stderr` are written to `SCAN_ARTIFACTS_DIR/<scan_id>/{stdout,stderr}.log`, the scan becomes `completed`, and an audit entry is written.
-4. On plugin failure or an unexpected exception: the scan becomes `failed` with `error_message` set — a scan is never left stuck in `running`.
-5. `DELETE /scans/{id}` cancellation is **cooperative/soft** in this milestone: it flips a `queued`/`running` scan's status to `cancelled` and (if the worker hasn't started it yet) the engine skips execution entirely. It does **not** forcibly kill an already-running subprocess — that needs tracking the Celery task id and calling `revoke(terminate=True)` against a live broker, which is flagged as a near-term follow-up rather than silently left out.
-
-### API documentation
-
-| Method | Path | Auth | Notes |
-|---|---|---|---|
-| `POST` | `/api/v1/projects/{project_id}/scans` | Owner/Admin/Lead Tester/Tester, or Org Admin | Body: `{"plugin", "plugin_config", "target_ids"}` |
-| `GET` | `/api/v1/projects/{project_id}/scans` | any project member | Lists all scans for the project |
-| `GET` | `/api/v1/scans/{scan_id}` | any member of the scan's project | |
-| `DELETE` | `/api/v1/scans/{scan_id}` | same as launch permission | Soft-cancel |
-
-Every failure mode maps to a specific RFC 7807 `type` in the JSON body
-(e.g. `.../errors/out-of-scope-target`, `.../errors/invalid-plugin-config`,
-`.../errors/scan-not-found`) — see `app/api/v1/error_handlers.py` for the
-full mapping.
-
-### Examples
-
-```bash
-# Launch an nmap scan (target must already be in-scope per an active
-# AuthorizationRecord, and the project must be Active)
-curl -X POST http://localhost:8000/api/v1/projects/$PROJECT_ID/scans \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{
-        "plugin": "nmap",
-        "plugin_config": {"target": "10.10.10.5", "ports": "1-1000", "arguments": ["-sV", "-Pn"]},
-        "target_ids": ["'"$TARGET_ID"'"]
-      }'
-# -> 201 { "id": "...", "status": "queued", ... }
-
-curl http://localhost:8000/api/v1/scans/$SCAN_ID -H "Authorization: Bearer $TOKEN"
-# -> once the worker finishes: "status": "completed", "exit_code": 0,
-#    "logs_path": "/tmp/specter-artifacts/<scan_id>"
-```
+- Run `pre-commit install` once per clone to enable local hooks.
+- Keep `domain/` free of framework imports — this is a hard CI gate, not a guideline.
 
 ---
 
-
-
 See `docs/SPECTER_AI_SRS.md` §18–19 for the full milestone/phase breakdown.
-This repository currently implements **Phase 1, Milestone 1** only.
