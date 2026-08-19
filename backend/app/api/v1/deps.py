@@ -385,6 +385,7 @@ def get_report_service(
     scan_repo: SqlAlchemyScanRepository = Depends(get_scan_repository),
     target_repo: SqlAlchemyTargetRepository = Depends(get_target_repository),
     graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
+    evidence_repo: SqlAlchemyEvidenceRepository = Depends(get_evidence_repository),
     settings: Settings = Depends(get_settings),
 ) -> ReportService:
     return ReportService(
@@ -396,6 +397,7 @@ def get_report_service(
         scan_repository=scan_repo,
         target_repository=target_repo,
         graph_repository=graph_repo,
+        evidence_repository=evidence_repo,
     )
 
 

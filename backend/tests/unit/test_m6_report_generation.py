@@ -22,25 +22,23 @@ import pytest
 
 from app.application.report_service import ReportService
 from app.application.report_templates import (
-    TEMPLATES,
     get_template,
     list_templates,
     pentest_report,
     recon_summary,
     vulnerability_assessment,
 )
-from app.domain.entities import Asset, Finding, GraphEdge, GraphNode, Scan
+from app.domain.entities import Asset, Evidence, Finding, Scan
 from app.domain.value_objects import (
     AssetType,
+    EvidenceType,
     FindingStatus,
-    GraphEdgeType,
-    GraphNodeType,
-    ReportStatus,
     ScanStatus,
     Severity,
 )
 from tests.fakes import (
     FakeAssetRepository,
+    FakeEvidenceRepository,
     FakeFindingRepository,
     FakeGraphRepository,
     FakeReportRepository,
@@ -48,7 +46,6 @@ from tests.fakes import (
     FakeScanRepository,
     FakeTargetRepository,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -103,6 +100,24 @@ def _make_scan(
         target_ids=[],
         plugin_config={"target": target},
         created_at=datetime.now(UTC),
+    )
+
+
+def _make_evidence(
+    finding_id: UUID,
+    filename: str = "nuclei-output.jsonl",
+    content_hash: str = "a" * 64,
+) -> Evidence:
+    return Evidence(
+        id=uuid4(),
+        finding_id=finding_id,
+        evidence_type=EvidenceType.RAW_LOG,
+        storage_pointer=f"/tmp/specter-artifacts/d8/{content_hash}.log",
+        content_hash=content_hash,
+        collected_by=uuid4(),
+        collected_at=datetime.now(UTC),
+        filename=filename,
+        file_size=1024,
     )
 
 
@@ -202,14 +217,55 @@ class TestReportTemplates:
 
     def test_pentest_report_with_graph_summary(self) -> None:
         graph = {"total_nodes": 5, "total_edges": 3, "nodes_by_type": {"asset": 3, "finding": 2}}
-        result = pentest_report(title="Report", findings=[], assets=[], scans=[], graph_summary=graph)
+        result = pentest_report(
+            title="Report", findings=[], assets=[], scans=[], graph_summary=graph
+        )
         assert "Attack Surface" in result
         assert "5" in result  # total nodes
         assert "3" in result  # total edges
 
+    def test_pentest_report_renders_evidence(self) -> None:
+        findings = [
+            {
+                "title": "Prometheus Metrics - Detect",
+                "severity": "medium",
+                "status": "open",
+                "description": "Prometheus metrics page was detected.",
+                "evidence": [
+                    {
+                        "evidence_type": "raw_log",
+                        "filename": "nuclei-prometheus-metrics.jsonl",
+                        "content_hash": "a" * 64,
+                        "storage_pointer": f"/tmp/specter-artifacts/d8/{'a' * 64}.log",
+                        "file_size": 29575,
+                        "collected_at": "2026-08-19T13:57:13Z",
+                    }
+                ],
+            },
+        ]
+        result = pentest_report(title="Pentest", findings=findings, assets=[], scans=[])
+        assert "**Evidence:**" in result
+        assert "nuclei-prometheus-metrics.jsonl" in result
+        assert "SHA-256" in result
+        assert "a" * 64 in result
+        assert "29575 bytes" in result
+        assert "/tmp/specter-artifacts/d8/" in result
+
+    def test_pentest_report_omits_evidence_section_when_empty(self) -> None:
+        findings = [
+            {"title": "XSS", "severity": "high", "status": "open", "description": ""},
+        ]
+        result = pentest_report(title="Pentest", findings=findings, assets=[], scans=[])
+        assert "**Evidence:**" not in result
+
     def test_vulnerability_assessment_focuses_critical_high(self) -> None:
         findings = [
-            {"title": "RCE", "severity": "critical", "status": "open", "description": "Remote code exec"},
+            {
+                "title": "RCE",
+                "severity": "critical",
+                "status": "open",
+                "description": "Remote code exec",
+            },
             {"title": "Low issue", "severity": "low", "status": "open", "description": ""},
         ]
         result = vulnerability_assessment(title="VA", findings=findings, assets=[], scans=[])
@@ -292,6 +348,60 @@ async def test_generate_version_with_template():
             content = fh.read()
         assert "Vulnerability Assessment" in content
         assert "CRITICAL" in content
+
+
+@pytest.mark.asyncio
+async def test_generate_version_includes_evidence():
+    """generate_version renders evidence metadata attached to findings."""
+    with tempfile.TemporaryDirectory() as tmp:
+        service, _, _, finding_repo, _, _, _ = _make_service(tmp)
+        evidence_repo = FakeEvidenceRepository()
+        evidence_repo.set_findings(finding_repo)
+        service._evidence_repo = evidence_repo
+        project_id = uuid4()
+        report = await service.create(project_id, title="Evidence Report")
+
+        finding = _make_finding(project_id, "Prometheus Metrics - Detect", Severity.MEDIUM)
+        await finding_repo.add(finding)
+        await evidence_repo.add(_make_evidence(finding.id))
+
+        version = await service.generate_version(
+            report.id, project_id, generated_by=uuid4()
+        )
+
+        with open(version.file_pointer) as fh:
+            content = fh.read()
+        assert "Prometheus Metrics - Detect" in content
+        assert "**Evidence:**" in content
+        assert "nuclei-output.jsonl" in content
+        assert "a" * 64 in content
+        assert "SHA-256" in content
+
+
+@pytest.mark.asyncio
+async def test_generate_version_redacted_keeps_evidence_metadata():
+    """Redacted reports still surface evidence metadata (no IPs are stored in it)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        service, _, _, finding_repo, _, _, _ = _make_service(tmp)
+        evidence_repo = FakeEvidenceRepository()
+        evidence_repo.set_findings(finding_repo)
+        service._evidence_repo = evidence_repo
+        project_id = uuid4()
+        report = await service.create(project_id, title="Redacted Evidence Report")
+
+        finding = _make_finding(project_id, "Prometheus Metrics - Detect", Severity.MEDIUM)
+        await finding_repo.add(finding)
+        await evidence_repo.add(_make_evidence(finding.id))
+
+        version = await service.generate_version(
+            report.id, project_id, generated_by=uuid4(),
+            is_redacted=True,
+        )
+
+        with open(version.file_pointer) as fh:
+            content = fh.read()
+        assert "**Evidence:**" in content
+        assert "nuclei-output.jsonl" in content
 
 
 @pytest.mark.asyncio
@@ -463,7 +573,11 @@ class TestRedaction:
 
     def test_redact_findings_removes_hostnames(self) -> None:
         findings = [
-            {"title": "Test", "severity": "high", "description": "Server admin.example.com vulnerable"}
+            {
+                "title": "Test",
+                "severity": "high",
+                "description": "Server admin.example.com vulnerable",
+            }
         ]
         result = ReportService._redact_findings(findings)
         assert "admin.example.com" not in result[0]["description"]

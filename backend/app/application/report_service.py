@@ -23,6 +23,7 @@ from app.domain.exceptions import (
 )
 from app.domain.repositories import (
     AssetRepository,
+    EvidenceRepository,
     FindingRepository,
     GraphRepository,
     ReportRepository,
@@ -52,6 +53,7 @@ class ReportService:
         scan_repository: ScanRepository | None = None,
         target_repository: TargetRepository | None = None,
         graph_repository: GraphRepository | None = None,
+        evidence_repository: EvidenceRepository | None = None,
     ) -> None:
         self._report_repo = report_repository
         self._version_repo = report_version_repository
@@ -61,6 +63,7 @@ class ReportService:
         self._scan_repo = scan_repository
         self._target_repo = target_repository
         self._graph_repo = graph_repository
+        self._evidence_repo = evidence_repository
 
     # --- M5: Core CRUD ---
 
@@ -108,6 +111,7 @@ class ReportService:
             raise ReportAlreadyFinalizedError(report_id)
 
         findings = await self._finding_repo.list_for_project(project_id, limit=10000)
+        evidence_by_finding = await self._collect_evidence_by_finding(project_id)
         findings_data = [
             {
                 "title": f.title,
@@ -115,6 +119,7 @@ class ReportService:
                 "status": f.status.value,
                 "description": f.description or "",
                 "asset_id": str(f.asset_id) if f.asset_id else None,
+                "evidence": evidence_by_finding.get(f.id, []),
             }
             for f in findings
         ]
@@ -268,6 +273,29 @@ class ReportService:
         return list_templates()
 
     # --- Private helpers ---
+
+    async def _collect_evidence_by_finding(
+        self, project_id: UUID
+    ) -> dict[UUID, list[dict[str, Any]]]:
+        """Group evidence metadata per finding for report rendering."""
+        if self._evidence_repo is None:
+            return {}
+        evidence_list = await self._evidence_repo.list_for_project(project_id)
+        grouped: dict[UUID, list[dict[str, Any]]] = {}
+        for e in evidence_list:
+            grouped.setdefault(e.finding_id, []).append(
+                {
+                    "id": str(e.id),
+                    "evidence_type": e.evidence_type.value,
+                    "filename": e.filename,
+                    "content_hash": e.content_hash,
+                    "storage_pointer": e.storage_pointer,
+                    "collected_by": str(e.collected_by),
+                    "collected_at": e.collected_at.isoformat(),
+                    "file_size": e.file_size,
+                }
+            )
+        return grouped
 
     async def _collect_assets(self, project_id: UUID) -> list[dict[str, Any]]:
         if self._asset_repo is None:

@@ -46,6 +46,27 @@ def _asset_summary(assets: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _evidence_lines(evidence: list[dict[str, Any]] | None) -> list[str]:
+    """Render evidence metadata lines for a finding."""
+    if not evidence:
+        return []
+    lines = ["**Evidence:**", ""]
+    for i, ev in enumerate(evidence, 1):
+        fname = ev.get("filename") or "unnamed artifact"
+        lines.append(f"- Artifact {i}: `{fname}`")
+        lines.append(f"  - Type: {ev.get('evidence_type', 'unknown')}")
+        if ev.get("file_size") is not None:
+            lines.append(f"  - Size: {ev['file_size']} bytes")
+        if ev.get("content_hash"):
+            lines.append(f"  - SHA-256: `{ev['content_hash']}`")
+        if ev.get("storage_pointer"):
+            lines.append(f"  - Stored at: `{ev['storage_pointer']}`")
+        if ev.get("collected_at"):
+            lines.append(f"  - Collected at: {ev['collected_at']}")
+    lines.append("")
+    return lines
+
+
 def pentest_report(
     title: str,
     findings: list[dict[str, Any]],
@@ -120,6 +141,9 @@ def pentest_report(
                 lines.append(f"- **Description:** {f['description']}")
             if f.get("asset_value"):
                 lines.append(f"- **Affected Asset:** `{f['asset_value']}`")
+            evidence_lines = _evidence_lines(f.get("evidence"))
+            if evidence_lines:
+                lines.extend(evidence_lines)
             lines.append("")
 
     lines.append("---")
@@ -166,6 +190,9 @@ def vulnerability_assessment(
                 lines.append(f"{f['description']}")
             if f.get("asset_value"):
                 lines.append(f"- Asset: `{f['asset_value']}`")
+            evidence_lines = _evidence_lines(f.get("evidence"))
+            if evidence_lines:
+                lines.extend(evidence_lines)
             lines.append("")
     else:
         lines.append("*No critical or high severity findings.*")
