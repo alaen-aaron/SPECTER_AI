@@ -904,3 +904,83 @@ def require_report_view_permission() -> Callable[..., Awaitable[ProjectMember]]:
         return await project_service.require_member(report.project_id, current_user.id)
 
     return _checker
+
+
+def require_report_edit_permission() -> (
+    Callable[..., Awaitable[ProjectMember | OrganizationMember]]
+):
+    """
+    Permission dependency for report routes keyed by `{report_id}` alone
+    (generate version, finalize, export PDF). Resolves the report's owning
+    project first, then applies the exact same rule as launching a scan
+    (scan-capable project roles or organization admin).
+    """
+
+    async def _checker(
+        report_id: UUID,
+        current_user: User = Depends(get_current_user),
+        report_service: ReportService = Depends(get_report_service),
+        project_service: ProjectService = Depends(get_project_service),
+        org_service: OrganizationService = Depends(get_organization_service),
+    ) -> ProjectMember | OrganizationMember:
+        report = await report_service.get(report_id)
+        return await _check_scan_launch_permission(
+            report.project_id, current_user, project_service, org_service
+        )
+
+    return _checker
+
+
+def require_report_version_view_permission() -> (
+    Callable[..., Awaitable[ProjectMember]]
+):
+    """
+    Permission dependency for report-version routes keyed by `{version_id}`
+    alone (get metadata, download). Resolves the version's owning report
+    and project first, then requires project membership — a report version's
+    permissions are always its project's permissions.
+    """
+
+    async def _checker(
+        version_id: UUID,
+        current_user: User = Depends(get_current_user),
+        report_version_repo: SqlAlchemyReportVersionRepository = Depends(
+            get_report_version_repository
+        ),
+        report_service: ReportService = Depends(get_report_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        version = await report_version_repo.get(version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="Report version not found.")
+        report = await report_service.get(version.report_id)
+        return await project_service.require_member(report.project_id, current_user.id)
+
+    return _checker
+
+
+def require_report_version_diff_permission() -> (
+    Callable[..., Awaitable[ProjectMember]]
+):
+    """
+    Permission dependency for the diff route keyed by `{version_id_a}` and
+    `{version_id_b}` — resolves the first version's owning project and
+    requires project membership (same rule as any report-version view).
+    """
+
+    async def _checker(
+        version_id_a: UUID,
+        current_user: User = Depends(get_current_user),
+        report_version_repo: SqlAlchemyReportVersionRepository = Depends(
+            get_report_version_repository
+        ),
+        report_service: ReportService = Depends(get_report_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        version = await report_version_repo.get(version_id_a)
+        if version is None:
+            raise HTTPException(status_code=404, detail="Report version not found.")
+        report = await report_service.get(version.report_id)
+        return await project_service.require_member(report.project_id, current_user.id)
+
+    return _checker

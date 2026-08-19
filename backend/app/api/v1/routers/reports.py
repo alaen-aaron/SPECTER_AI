@@ -12,6 +12,9 @@ from app.api.v1.deps import (
     get_current_user,
     get_report_service,
     require_project_role,
+    require_report_edit_permission,
+    require_report_version_diff_permission,
+    require_report_version_view_permission,
     require_report_view_permission,
     require_scan_launch_permission,
 )
@@ -21,7 +24,7 @@ from app.api.v1.schemas.reports import (
     ReportVersionResponse,
 )
 from app.application.report_service import ReportService
-from app.domain.entities import ProjectMember, Report, ReportVersion, User
+from app.domain.entities import OrganizationMember, ProjectMember, Report, ReportVersion, User
 
 router = APIRouter(tags=["reports"])
 
@@ -76,7 +79,7 @@ async def get_report(
 async def generate_version(
     report_id: UUID,
     current_user: User = Depends(get_current_user),
-    _member: ProjectMember = Depends(require_scan_launch_permission()),
+    _member: ProjectMember | OrganizationMember = Depends(require_report_edit_permission()),
     template: str | None = None,
     redacted: bool = False,
     service: ReportService = Depends(get_report_service),
@@ -98,7 +101,7 @@ async def generate_version(
 )
 async def finalize_report(
     report_id: UUID,
-    _member: ProjectMember = Depends(require_scan_launch_permission()),
+    _member: ProjectMember | OrganizationMember = Depends(require_report_edit_permission()),
     service: ReportService = Depends(get_report_service),
 ) -> Report:
     return await service.finalize(report_id)
@@ -111,7 +114,7 @@ async def finalize_report(
 )
 async def get_version(
     version_id: UUID,
-    _member: ProjectMember = Depends(require_report_view_permission()),
+    _member: ProjectMember = Depends(require_report_version_view_permission()),
     service: ReportService = Depends(get_report_service),
 ) -> ReportVersion:
     version = await service._version_repo.get(version_id)
@@ -127,7 +130,7 @@ async def get_version(
 )
 async def download_version(
     version_id: UUID,
-    _member: ProjectMember = Depends(require_report_view_permission()),
+    _member: ProjectMember = Depends(require_report_version_view_permission()),
     service: ReportService = Depends(get_report_service),
 ) -> FileResponse:
     version = await service._version_repo.get(version_id)
@@ -154,7 +157,7 @@ async def download_version(
 async def export_pdf(
     report_id: UUID,
     current_user: User = Depends(get_current_user),
-    _member: ProjectMember = Depends(require_scan_launch_permission()),
+    _member: ProjectMember | OrganizationMember = Depends(require_report_edit_permission()),
     service: ReportService = Depends(get_report_service),
 ) -> FileResponse:
     report = await service.get(report_id)
@@ -182,9 +185,9 @@ async def export_pdf(
 async def diff_versions(
     version_id_a: UUID,
     version_id_b: UUID,
-    _member: ProjectMember = Depends(require_report_view_permission()),
+    _member: ProjectMember = Depends(require_report_version_diff_permission()),
     service: ReportService = Depends(get_report_service),
-) -> dict:
+) -> dict[str, object]:
     return await service.diff_versions(version_id_a, version_id_b)
 
 
@@ -193,7 +196,7 @@ async def diff_versions(
     summary="List available report templates",
 )
 async def list_report_templates(
-    _member: ProjectMember = Depends(require_project_role()),
+    _: User = Depends(get_current_user),
     service: ReportService = Depends(get_report_service),
 ) -> list[str]:
     return service.available_templates()
