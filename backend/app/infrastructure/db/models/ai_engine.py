@@ -45,6 +45,14 @@ class PlannedActionModel(Base):
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
+    # --- M7.2 (AI-driven planning & controlled execution) ---------------------
+    objective: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    scan_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), nullable=False
     )

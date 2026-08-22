@@ -22,6 +22,8 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.action_validator import ActionProposalValidator
+
 # AI Decision Engine services (Phase 4)
 from app.application.ai_reporter_service import AIReporterService
 from app.application.analyzer_service import AnalyzerService
@@ -465,6 +467,32 @@ def get_ai_context_memory_repository(
     return SqlAlchemyAIContextMemoryRepository(session)
 
 
+def get_action_proposal_validator(
+    scope_guard: ScopeGuardService = Depends(get_scope_guard_service),
+    plugin_policy: PluginManager = Depends(get_plugin_manager),
+    plugin_lookup: PluginRegistry = Depends(get_plugin_registry),
+    target_repo: SqlAlchemyTargetRepository = Depends(get_target_repository),
+    action_repo: SqlAlchemyPlannedActionRepository = Depends(
+        get_planned_action_repository
+    ),
+    settings: Settings = Depends(get_settings),
+) -> ActionProposalValidator:
+    """
+    M7.2 deterministic gate between AI proposals and execution. Reads the
+    M7.1 executor configuration read-only (mode reporting only) — it can
+    never alter isolation, allow-lists, or executor settings.
+    """
+    return ActionProposalValidator(
+        policy_validator=plugin_policy,
+        plugin_lookup=plugin_lookup,
+        target_repository=target_repo,
+        action_repository=action_repo,
+        scope_guard=scope_guard,
+        executor_enabled=settings.EXECUTOR_ENABLED,
+        executor_image=settings.EXECUTOR_IMAGE,
+    )
+
+
 def get_planner_service(
     action_repo: SqlAlchemyPlannedActionRepository = Depends(get_planned_action_repository),
     finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
@@ -473,14 +501,23 @@ def get_planner_service(
         get_ai_context_memory_repository
     ),
     graph_repo: SqlAlchemyGraphRepository = Depends(get_graph_repository),
+    target_repo: SqlAlchemyTargetRepository = Depends(get_target_repository),
+    project_repo: SqlAlchemyProjectRepository = Depends(get_project_repository),
+    audit_repo: SqlAlchemyAuditLogRepository = Depends(get_audit_log_repository),
+    validator: ActionProposalValidator = Depends(get_action_proposal_validator),
 ) -> PlannerService:
-    return PlannerService(
+    planner = PlannerService(
         planned_action_repo=action_repo,
         finding_repo=finding_repo,
         asset_repo=asset_repo,
         context_memory_repo=context_memory_repo,
         graph_repo=graph_repo,
+        target_repo=target_repo,
+        project_repo=project_repo,
+        audit_repo=audit_repo,
     )
+    planner.set_validator(validator)
+    return planner
 
 
 def get_analyzer_service(

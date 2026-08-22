@@ -489,6 +489,11 @@ class PlannedAction:
     expires_at: datetime | None = None
     created_by: UUID | None = None
     created_at: datetime | None = None
+    # --- M7.2 (AI-driven planning & controlled execution) ---------------------
+    objective: str | None = None
+    expected_value: str | None = None
+    risk_level: str | None = None
+    scan_id: UUID | None = None
 
     @property
     def is_pending(self) -> bool:

@@ -42,6 +42,11 @@ class PlannedActionResponse(BaseModel):
     expires_at: datetime | None = None
     created_by: UUID | None = None
     created_at: datetime | None = None
+    # --- M7.2 ---
+    objective: str | None = None
+    expected_value: str | None = None
+    risk_level: str | None = None
+    scan_id: UUID | None = None
 
     model_config = {"from_attributes": True}
 
@@ -56,6 +61,59 @@ class PlannedActionReject(BaseModel):
     """Request to reject a planned action."""
 
     reason: str = ""
+
+
+# --- M7.2: AI planning & controlled execution -------------------------------
+
+
+class PlanRequest(BaseModel):
+    """Request an AI planning session (plan -> validate -> return)."""
+
+    objective: str = Field(default="", max_length=2000)
+    max_actions: int = Field(default=3, ge=1, le=5)
+
+
+class ValidationCheckResponse(BaseModel):
+    """One deterministic validation check and its outcome."""
+
+    name: str
+    passed: bool
+    detail: str = ""
+
+
+class ProposalValidationResponse(BaseModel):
+    """Deterministic validation result for one AI-proposed action."""
+
+    accepted: bool
+    checks: list[ValidationCheckResponse] = Field(default_factory=list)
+    runner_mode: str
+
+
+class ProposedActionResponse(BaseModel):
+    """A planner proposal paired with its validation result."""
+
+    action: PlannedActionResponse
+    validation: ProposalValidationResponse
+    persisted: bool
+
+
+class PlanResponse(BaseModel):
+    """Result of a planning session (never auto-executes)."""
+
+    proposals: list[ProposedActionResponse]
+    skipped_duplicates: int
+    ungrounded: int
+    stopped_because: str
+    context_summary: dict[str, object]
+    runner_mode: str
+
+
+class ExecutePlannedActionResponse(BaseModel):
+    """Result of executing an APPROVED planned action via ScanService."""
+
+    action: PlannedActionResponse
+    scan_id: UUID
+    scan_status: str
 
 
 # --- Risk Scores (SRS FR-7.3) ----------------------------------------------

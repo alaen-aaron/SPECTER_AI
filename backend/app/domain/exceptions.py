@@ -344,6 +344,35 @@ class PlannedActionExpiredError(DomainError):
         super().__init__(f"Planned action {action_id} has expired.")
 
 
+class ActionNotExecutableError(DomainError):
+    """M7.2 — an action may only execute from the APPROVED state."""
+
+    def __init__(self, action_id: UUID, status: str) -> None:
+        self.action_id = action_id
+        self.status = status
+        super().__init__(
+            f"Planned action {action_id} cannot be executed from status "
+            f"'{status}'; requires human approval first (SRS §8.4)."
+        )
+
+
+class ActionRejectedByValidatorError(DomainError):
+    """
+    M7.2 — deterministic validation rejected an AI-proposed action.
+
+    `reasons` lists every failed check; the action is never executed
+    and the proposal is persisted only as an audit/rejection record.
+    """
+
+    def __init__(self, action_id: UUID, reasons: list[str]) -> None:
+        self.action_id = action_id
+        self.reasons = reasons
+        super().__init__(
+            f"AI-proposed action {action_id} rejected by deterministic "
+            f"validation: {'; '.join(reasons)}"
+        )
+
+
 class RiskScoreNotFoundError(DomainError):
     def __init__(self, score_id: UUID) -> None:
         self.score_id = score_id

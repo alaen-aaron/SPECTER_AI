@@ -21,22 +21,27 @@ from app.api.v1.deps import (
     get_planner_service,
     get_prompt_library_service,
     get_risk_engine_service,
+    get_scan_service,
     require_project_role,
 )
 from app.api.v1.schemas.ai_engine import (
     ContextMemoryCreate,
     ContextMemoryResponse,
     CorrelationResultResponse,
+    ExecutePlannedActionResponse,
     ExecutiveSummaryResponse,
     ExplainResponse,
     FindingNarrativeResponse,
     PlannedActionApprove,
     PlannedActionReject,
     PlannedActionResponse,
+    PlanRequest,
+    PlanResponse,
     PromptTemplateCreate,
     PromptTemplateRenderRequest,
     PromptTemplateRenderResponse,
     PromptTemplateResponse,
+    ProposedActionResponse,
     RiskScoreCreate,
     RiskScoreResponse,
 )
@@ -47,6 +52,7 @@ from app.application.explainer_service import ExplainerService
 from app.application.planner_service import PlannerService
 from app.application.prompt_library_service import PromptLibraryService
 from app.application.risk_engine_service import RiskEngineService
+from app.application.scan_service import ScanService
 from app.domain.entities import User
 from app.domain.value_objects import ProjectRole
 
@@ -143,6 +149,102 @@ async def reject_planner_suggestion(
         action_id, rejected_by=current_user.id, reason=body.reason
     )
     return PlannedActionResponse.model_validate(action)
+
+
+# --- M7.2: AI planning & controlled execution -------------------------------
+
+
+def _proposal_response(p: object) -> ProposedActionResponse:
+    from app.api.v1.schemas.ai_engine import (
+        ProposalValidationResponse,
+        ValidationCheckResponse,
+    )
+
+    validation = p.validation  # type: ignore[attr-defined]
+    return ProposedActionResponse(
+        action=PlannedActionResponse.model_validate(p.action),  # type: ignore[attr-defined]
+        validation=ProposalValidationResponse(
+            accepted=validation.accepted,
+            checks=[
+                ValidationCheckResponse(name=c.name, passed=c.passed, detail=c.detail)
+                for c in validation.checks
+            ],
+            runner_mode=validation.runner_mode,
+        ),
+        persisted=p.persisted,  # type: ignore[attr-defined]
+    )
+
+
+@router.post(
+    "/planner/plan",
+    response_model=PlanResponse,
+    summary="M7.2: run an AI planning session (plan -> validate -> return)",
+    description=(
+        "Builds the project-scoped security context, asks the planner for "
+        "structured action proposals, validates each one through the "
+        "deterministic ActionProposalValidator (plugin policy, target "
+        "ownership, Scope Guard, duplicate prevention, executor "
+        "constraints), persists only ACCEPTED proposals as "
+        "pending_review, and returns every proposal with its validation "
+        "result. Nothing is executed by this endpoint — SRS §8.4 human "
+        "approval remains mandatory before any execution."
+    ),
+)
+async def plan_actions(
+    project_id: UUID,
+    body: PlanRequest,
+    current_user: User = Depends(get_current_user),
+    _member: object = Depends(require_project_role(*_AI_CAPABLE_PROJECT_ROLES)),
+    planner: PlannerService = Depends(get_planner_service),
+) -> PlanResponse:
+    outcome = await planner.plan(
+        project_id=project_id,
+        created_by=current_user.id,
+        objective=body.objective,
+        max_actions=body.max_actions,
+    )
+    return PlanResponse(
+        proposals=[_proposal_response(p) for p in outcome.proposals],
+        skipped_duplicates=outcome.skipped_duplicates,
+        ungrounded=outcome.ungrounded,
+        stopped_because=outcome.stopped_because,
+        context_summary=outcome.context_summary,
+        runner_mode=outcome.runner_mode,
+    )
+
+
+@router.post(
+    "/planner/suggestions/{action_id}/execute",
+    response_model=ExecutePlannedActionResponse,
+    summary="M7.2: execute an APPROVED planned action (human-gated)",
+    description=(
+        "The controlled bridge from an approved AI proposal to the "
+        "existing execution path. Requires status=approved (SRS §8.4), "
+        "re-runs the deterministic validator, then delegates to "
+        "ScanService.create — which re-validates Scope Guard and plugin "
+        "policy before dispatching through the M7.1 isolated executor. "
+        "No LLM output ever reaches Celery directly."
+    ),
+)
+async def execute_planned_action(
+    project_id: UUID,
+    action_id: UUID,
+    current_user: User = Depends(get_current_user),
+    _member: object = Depends(require_project_role(*_AI_CAPABLE_PROJECT_ROLES)),
+    planner: PlannerService = Depends(get_planner_service),
+    scan_service: ScanService = Depends(get_scan_service),
+) -> ExecutePlannedActionResponse:
+    action, scan = await planner.execute_approved(
+        action_id=action_id,
+        initiated_by=current_user.id,
+        launch_scan=scan_service.create,
+        expected_project_id=project_id,
+    )
+    return ExecutePlannedActionResponse(
+        action=PlannedActionResponse.model_validate(action),
+        scan_id=scan.id,
+        scan_status=scan.status.value,
+    )
 
 
 # --- Analyzer (SRS FR-7.2) --------------------------------------------------

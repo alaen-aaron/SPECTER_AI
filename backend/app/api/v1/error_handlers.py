@@ -15,6 +15,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.domain.exceptions import (
+    ActionNotExecutableError,
+    ActionRejectedByValidatorError,
     AIContextMemoryNotFoundError,
     AssetNotFoundError,
     AuthorizationRecordNotFoundError,
@@ -115,6 +117,9 @@ _EXCEPTION_MAP: dict[type[DomainError], tuple[int, str]] = {
     PlannedActionNotFoundError: (404, "planned-action-not-found"),
     PlannedActionNotApprovableError: (409, "planned-action-not-approvable"),
     PlannedActionExpiredError: (410, "planned-action-expired"),
+    # AI planning & controlled execution (M7.2)
+    ActionNotExecutableError: (409, "action-not-executable"),
+    ActionRejectedByValidatorError: (422, "action-rejected-by-validator"),
     RiskScoreNotFoundError: (404, "risk-score-not-found"),
     RiskScoreAlreadyExistsError: (409, "risk-score-already-exists"),
     PromptTemplateNotFoundError: (404, "prompt-template-not-found"),

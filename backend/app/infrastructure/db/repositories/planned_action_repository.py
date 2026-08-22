@@ -31,6 +31,10 @@ def _to_entity(row: PlannedActionModel) -> PlannedAction:
         expires_at=row.expires_at,
         created_by=row.created_by,
         created_at=row.created_at,
+        objective=row.objective,
+        expected_value=row.expected_value,
+        risk_level=row.risk_level,
+        scan_id=row.scan_id,
     )
 
 
@@ -47,7 +51,9 @@ class SqlAlchemyPlannedActionRepository:
             description=action.description,
             justification=action.justification,
             plugin=action.plugin,
-            target_ids=action.target_ids,
+            # JSONB needs JSON-native values; UUIDs are stored as strings
+            # and re-hydrated by `_to_entity`.
+            target_ids=[str(u) for u in action.target_ids],
             plugin_config=action.plugin_config,
             status=action.status.value,
             approved_by=action.approved_by,
@@ -55,6 +61,10 @@ class SqlAlchemyPlannedActionRepository:
             rejection_reason=action.rejection_reason,
             expires_at=action.expires_at,
             created_by=action.created_by,
+            objective=action.objective,
+            expected_value=action.expected_value,
+            risk_level=action.risk_level,
+            scan_id=action.scan_id,
         )
         self._session.add(model)
         await self._session.flush()
@@ -90,4 +100,8 @@ class SqlAlchemyPlannedActionRepository:
         row.approved_by = action.approved_by
         row.approved_at = action.approved_at
         row.rejection_reason = action.rejection_reason
+        row.objective = action.objective
+        row.expected_value = action.expected_value
+        row.risk_level = action.risk_level
+        row.scan_id = action.scan_id
         await self._session.flush()
