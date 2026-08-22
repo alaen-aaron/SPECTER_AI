@@ -91,6 +91,18 @@ class Settings(BaseSettings):
     SCAN_ARTIFACTS_DIR: str = Field(default="/tmp/specter-artifacts")
     SCAN_DEFAULT_TIMEOUT_SECONDS: int = Field(default=120)
 
+    # --- Plugin executor (Milestone 7.1 — per-plugin container isolation) ----
+    # When EXECUTOR_ENABLED is true, the Celery worker dispatches plugin
+    # commands to the `executor` service instead of running subprocesses in
+    # the worker container. The executor owns the Docker socket and runs each
+    # plugin in a hardened ephemeral container (non-root, read-only rootfs,
+    # dropped capabilities, resource limits, target-only network policy).
+    EXECUTOR_ENABLED: bool = Field(default=False)
+    EXECUTOR_URL: str = Field(default="http://executor:8000")
+    EXECUTOR_IMAGE: str = Field(default="specter-plugins:local")
+    EXECUTOR_CPU_LIMIT: float = Field(default=1.0)
+    EXECUTOR_MEMORY_LIMIT: str = Field(default="512m")
+
     @property
     def is_local(self) -> bool:
         return self.APP_ENV == AppEnvironment.LOCAL

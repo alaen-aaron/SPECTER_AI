@@ -17,7 +17,7 @@ import subprocess
 from typing import Any, cast
 
 from app.domain.exceptions import InvalidPluginConfigError
-from app.plugins.base import Plugin, PluginResult
+from app.plugins.base import Plugin, PluginResult, get_active_runner
 
 
 class SubprocessPlugin(Plugin):
@@ -43,12 +43,28 @@ class SubprocessPlugin(Plugin):
         target: str = "",
         extra_metadata: dict[str, Any] | None = None,
     ) -> PluginResult:
-        """Execute a subprocess with standard error handling."""
+        """Execute a command with standard error handling.
+
+        When the ExecutionEngine has installed an active ``CommandRunner``
+        (Milestone 7.1 container isolation), the command is dispatched to the
+        isolated executor instead of this process's subprocess pool. Otherwise
+        it falls back to ``subprocess.run`` — this is what makes every plugin
+        trivially runnable in unit tests without Docker.
+        """
         meta = {"plugin": self.name(), "command": command}
         if target:
             meta["target"] = target
         if extra_metadata:
             meta.update(extra_metadata)
+
+        runner = get_active_runner()
+        if runner is not None:
+            return runner.run(
+                command,
+                timeout_seconds=timeout_seconds,
+                target=target,
+                metadata=meta,
+            )
 
         try:
             result = subprocess.run(  # noqa: S603 - controlled by subclass

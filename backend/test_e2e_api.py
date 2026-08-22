@@ -5,7 +5,15 @@ import requests, json, time
 from datetime import datetime
 
 BASE = "http://localhost:9002"
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiNGVlMTE3Yy03YzFhLTQ2YzgtYTQ2My0wNDlmYjM5YWM2ZTkiLCJpYXQiOjE3ODcwNjM4NTUsImV4cCI6MTc4NzA2NDc1NX0.BwTG7YJUeEN1PpbyPJ7Rc9D3dcMi2VRpEy75nE5zPrI"
+E2E_EMAIL = os.environ.get("SPECTER_E2E_EMAIL", "e2e.alice@example.com")
+E2E_PASSWORD = os.environ.get("SPECTER_E2E_PASSWORD", "Owner-pass-2026!")
+_login = requests.post(
+    f"{BASE}/api/v1/auth/login",
+    json={"email": E2E_EMAIL, "password": E2E_PASSWORD},
+    timeout=30,
+)
+_login.raise_for_status()
+TOKEN = _login.json()["access_token"]
 H = {"Authorization": f"Bearer {TOKEN}"}
 
 passed = 0

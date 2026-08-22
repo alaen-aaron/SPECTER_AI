@@ -1,0 +1,155 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# SPECTER_AI — hardened plugin runtime image (M7.1)
+#
+# Runs every plugin command inside the executor's ephemeral containers.
+# Contains ALL security-tool binaries (one shared image — not 19 per-tool
+# images yet) but deliberately NO Python application code, no Docker CLI/SDK,
+# no database credentials, and no shared volume with api/worker/beat.
+#
+# The executor launches it with: non-root user, read-only root filesystem,
+# dropped Linux capabilities, CPU/memory limits, per-task network + target-only
+# egress policy. The image itself is also hardened (single non-root user).
+#
+# Build:  docker compose build plugins-image
+# Tag:    specter-plugins:local
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1 — Compile Go-based security tools (same pins as backend/Dockerfile)
+# ---------------------------------------------------------------------------
+FROM golang:1.24-bookworm AS go-builder
+
+ENV GOTOOLCHAIN=auto
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpcap-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG SUBFINDER_VERSION=v2.6.7
+ARG HTTPX_VERSION=v1.6.10
+ARG DNSX_VERSION=v1.2.1
+ARG NAABU_VERSION=v2.3.4
+ARG KATANA_VERSION=v1.1.1
+ARG NUCLEI_VERSION=v3.3.7
+ARG GOBUSTER_VERSION=v3.6.0
+ARG DALFOX_VERSION=v2.13.0
+ARG FFUF_VERSION=v2.1.0
+ARG GITLEAKS_VERSION=v8.30.1
+ARG TRUFFLEHOG_VERSION=v3.95.9
+
+RUN go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION}
+RUN go install -v github.com/projectdiscovery/httpx/cmd/httpx@${HTTPX_VERSION}
+RUN go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@${DNSX_VERSION}
+RUN go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@${NAABU_VERSION}
+RUN go install -v github.com/projectdiscovery/katana/cmd/katana@${KATANA_VERSION}
+RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}
+RUN go install -v github.com/OJ/gobuster/v3@${GOBUSTER_VERSION}
+RUN go install -v github.com/hahwul/dalfox/v2@${DALFOX_VERSION}
+RUN go install -v github.com/ffuf/ffuf/v2@${FFUF_VERSION}
+RUN go install -v github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}
+RUN curl -sSfL "https://github.com/trufflesecurity/trufflehog/releases/download/${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION#v}_linux_amd64.tar.gz" \
+    | tar xz -C /tmp trufflehog \
+    && mv /tmp/trufflehog /go/bin/trufflehog
+
+# ---------------------------------------------------------------------------
+# Stage 2 — Hardened runtime (tools only, non-root, no app code)
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    HOME=/tmp
+
+# System packages: iputils-ping (ping), nmap, sslscan, ruby (whatweb/wpscan),
+# perl (nikto), git (tool repos), ca-certificates.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        iputils-ping \
+        libcurl4-openssl-dev \
+        libxml2-dev \
+        libxslt1-dev \
+        nmap \
+        perl \
+        procps \
+        ruby \
+        ruby-dev \
+        sslscan \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Go tool binaries from builder stage ─────────────────────────────────────
+COPY --from=go-builder /go/bin/subfinder  /usr/local/bin/subfinder
+COPY --from=go-builder /go/bin/httpx      /usr/local/bin/httpx
+COPY --from=go-builder /go/bin/dnsx       /usr/local/bin/dnsx
+COPY --from=go-builder /go/bin/naabu      /usr/local/bin/naabu
+COPY --from=go-builder /go/bin/katana     /usr/local/bin/katana
+COPY --from=go-builder /go/bin/nuclei     /usr/local/bin/nuclei
+COPY --from=go-builder /go/bin/gobuster   /usr/local/bin/gobuster
+COPY --from=go-builder /go/bin/dalfox     /usr/local/bin/dalfox
+COPY --from=go-builder /go/bin/ffuf       /usr/local/bin/ffuf
+COPY --from=go-builder /go/bin/gitleaks   /usr/local/bin/gitleaks
+COPY --from=go-builder /go/bin/trufflehog /usr/local/bin/trufflehog
+
+# ── WhatWeb (Ruby) ──────────────────────────────────────────────────────────
+ARG WHATWEB_VERSION=0.5.5
+RUN git clone --depth 1 --branch v${WHATWEB_VERSION} \
+        https://github.com/urbanadventurer/WhatWeb.git /opt/whatweb \
+    && ln -s /opt/whatweb/whatweb /usr/local/bin/whatweb \
+    && chmod +x /opt/whatweb/whatweb
+
+# ── Nikto (Perl) ────────────────────────────────────────────────────────────
+RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto \
+    && ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto \
+    && chmod +x /opt/nikto/program/nikto.pl
+
+# ── sqlmap (Python) ─────────────────────────────────────────────────────────
+ARG SQLMAP_VERSION=1.8
+RUN pip install --no-cache-dir sqlmap==${SQLMAP_VERSION} \
+    && ln -s $(python -c "import shutil; print(shutil.which('sqlmap'))" 2>/dev/null \
+              || echo /usr/local/bin/sqlmap) /usr/local/bin/sqlmap \
+    || true
+RUN if ! command -v sqlmap >/dev/null 2>&1; then \
+        git clone --depth 1 --branch sqlmap-${SQLMAP_VERSION} \
+            https://github.com/sqlmapproject/sqlmap.git /opt/sqlmap \
+        && ln -s /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap \
+        && chmod +x /opt/sqlmap/sqlmap.py; \
+    fi
+
+# ── WPScan (Ruby gem) ──────────────────────────────────────────────────────
+RUN gem install wpscan --no-document
+
+# ── Minimal wordlist for gobuster / ffuf ────────────────────────────────────
+RUN mkdir -p /usr/share/wordlists && \
+    printf 'admin\napi\nbackup\nconfig\ndashboard\ndb\ndev\ndocs\nfavicon.ico\n' > \
+        /usr/share/wordlists/common.txt && \
+    printf 'admin\napi\nbackup\nconfig\ndashboard\nimages\njs\nlogin\n' >> \
+        /usr/share/wordlists/common.txt && \
+    printf 'css\nfonts\nimg\nlib\nmedia\nprivate\npublic\nstatic\n' >> \
+        /usr/share/wordlists/common.txt && \
+    printf 'test\nuploads\nuser\nusers\nweb\nwp-admin\nwp-content\nwp-includes\n' >> \
+        /usr/share/wordlists/common.txt && \
+    printf 'xmlrpc.php\nreadme.html\nlicense.txt\n.htaccess\nweb.config\n' >> \
+        /usr/share/wordlists/common.txt
+
+# The Python `httpx` console-script would shadow the ProjectDiscovery binary;
+# re-copy the Go binary AFTER pip install (sqlmap only) so `httpx` resolves to
+# the ProjectDiscovery tool (the Python httpx package was never installed here,
+# but keep the ordering consistent with backend/Dockerfile for safety).
+COPY --from=go-builder /go/bin/httpx /usr/local/bin/httpx
+
+# ── Non-root runtime user (uid/gid 10001) ───────────────────────────────────
+RUN useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin specter
+
+# Executor overrides user/read_only/cap_drop at container creation; this is the
+# image-level default so running the image bare is also non-root.
+USER 10001:10001
+WORKDIR /tmp
+
+# No entrypoint/CMD: the executor always supplies the command explicitly.
+CMD []

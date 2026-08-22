@@ -1,0 +1,9 @@
+# Ruff config for the standalone executor service (mirrors backend conventions).
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "N"]
+# E203: conflicts with Black slice formatting; B008: FastAPI Depends() in
+# argument defaults is the idiomatic DI pattern.
+ignore = ["E203", "B008"]

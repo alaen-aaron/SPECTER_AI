@@ -265,7 +265,7 @@ async def test_engine_increments_scan_metrics() -> None:
         exit_code: int | None = 0
 
     class _FakePluginManager:
-        def run(self, plugin: str, config: dict, timeout: int) -> _Result:
+        def run(self, plugin: str, config: dict, timeout: int, runner=None) -> _Result:
             return _Result()
 
     class _FakeAuditRepo:

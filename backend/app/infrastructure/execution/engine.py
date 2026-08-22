@@ -42,6 +42,7 @@ from app.domain.exceptions import DomainError
 from app.domain.repositories import AuditLogRepository, ScanRepository, ToolResultRepository
 from app.domain.value_objects import ScanStatus
 from app.infrastructure.storage.local_artifact_store import LocalArtifactStore
+from app.plugins.base import CommandRunner
 from app.plugins.manager import PluginManager
 from app.plugins.normalizer_registry import NormalizerRegistry
 
@@ -66,6 +67,7 @@ class ExecutionEngine:
         correlation_service: CorrelationService | None = None,
         asset_service: AssetService | None = None,
         graph_service: GraphService | None = None,
+        runner: CommandRunner | None = None,
     ) -> None:
         self._scans = scan_repository
         self._scope_guard = scope_guard
@@ -78,6 +80,7 @@ class ExecutionEngine:
         self._correlation = correlation_service
         self._asset_service = asset_service
         self._graph_service = graph_service
+        self._runner = runner
 
     async def run(self, scan_id: UUID) -> None:
         scan = await self._scans.get(scan_id)
@@ -123,7 +126,10 @@ class ExecutionEngine:
 
         try:
             result = self._plugin_manager.run(
-                scan.plugin, scan.plugin_config, self._default_timeout_seconds
+                scan.plugin,
+                scan.plugin_config,
+                self._default_timeout_seconds,
+                runner=self._runner,
             )
         except Exception as exc:  # noqa: BLE001 - must never leave a scan stuck in `running`
             log.error("scan_execution_unexpected_error", error=str(exc))

@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
 
 class PluginCategory(StrEnum):
@@ -114,6 +116,51 @@ class PluginResult:
     exit_code: int | None
     artifacts: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class CommandRunner(Protocol):
+    """
+    Executes an already-validated plugin command in an isolated environment.
+
+    Milestone 7.1: production uses `ExecutorHttpRunner` (worker → executor
+    service → ephemeral Docker container). Tests and local development use
+    `None` (plain subprocess in the current process). A plugin never decides
+    which one is active — `PluginManager.run` installs the active runner as a
+    context variable before invoking `plugin.execute`, and the subprocess
+    helpers delegate to it when present.
+    """
+
+    def run(
+        self,
+        command: list[str],
+        *,
+        timeout_seconds: int,
+        target: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> PluginResult: ...
+
+
+_T = TypeVar("_T")
+
+_active_runner: ContextVar[CommandRunner | None] = ContextVar(
+    "specter_active_plugin_runner", default=None
+)
+
+
+def get_active_runner() -> CommandRunner | None:
+    """Return the runner currently installed for this execution context."""
+    return _active_runner.get()
+
+
+def run_with_active_runner(
+    runner: CommandRunner | None, func: Callable[[], _T]
+) -> _T:
+    """Run `func` with `runner` active for this context, restoring on exit."""
+    token = _active_runner.set(runner)
+    try:
+        return func()
+    finally:
+        _active_runner.reset(token)
 
 
 class Plugin(ABC):

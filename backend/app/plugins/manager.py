@@ -15,13 +15,18 @@ from __future__ import annotations
 from typing import Any
 
 from app.domain.exceptions import InvalidPluginConfigError
-from app.plugins.base import PluginResult
+from app.plugins.base import CommandRunner, PluginResult, run_with_active_runner
 from app.plugins.registry import PluginRegistry
 
 
 class PluginManager:
-    def __init__(self, plugin_registry: PluginRegistry) -> None:
+    def __init__(
+        self,
+        plugin_registry: PluginRegistry,
+        runner: CommandRunner | None = None,
+    ) -> None:
         self._registry = plugin_registry
+        self._runner = runner
 
     def validate(self, plugin_name: str, config: dict[str, Any]) -> None:
         """
@@ -34,17 +39,29 @@ class PluginManager:
         plugin = self._registry.get(plugin_name)  # raises PluginNotFoundError
         plugin.validate_config(config)  # raises InvalidPluginConfigError
 
-    def run(self, plugin_name: str, config: dict[str, Any], timeout_seconds: int) -> PluginResult:
+    def run(
+        self,
+        plugin_name: str,
+        config: dict[str, Any],
+        timeout_seconds: int,
+        runner: CommandRunner | None = None,
+    ) -> PluginResult:
         """
         Raises `PluginNotFoundError` or `InvalidPluginConfigError` —
         both caller errors, distinct from a `PluginResult(success=False)`,
         which represents "the plugin ran but the underlying tool failed."
+
+        `runner` overrides the constructor-level runner for this call
+        (used by the ExecutionEngine, which owns the runner lifetime).
         """
         plugin = self._registry.get(plugin_name)
         plugin.validate_config(config)
 
+        active_runner = self._runner if runner is None else runner
         try:
-            return plugin.execute(config, timeout_seconds)
+            return run_with_active_runner(
+                active_runner, lambda: plugin.execute(config, timeout_seconds)
+            )
         except InvalidPluginConfigError:
             raise
         except Exception as exc:  # noqa: BLE001 - a plugin bug must not crash the scan

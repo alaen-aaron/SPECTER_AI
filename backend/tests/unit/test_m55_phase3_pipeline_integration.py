@@ -310,7 +310,7 @@ class _FakePluginManager:
         self._stderr = stderr
         self._success = success
 
-    def run(self, plugin: str, config: dict, timeout: int):
+    def run(self, plugin: str, config: dict, timeout: int, runner=None):
         return _PluginResult(
             self._stdout, self._stderr, self._success, 0 if self._success else 1
         )

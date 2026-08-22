@@ -21,7 +21,14 @@ from typing import Any
 from app.domain.exceptions import InvalidPluginConfigError
 from app.domain.target_validation import validate_target_value
 from app.domain.value_objects import TargetType
-from app.plugins.base import Plugin, PluginCapability, PluginCategory, PluginMetadata, PluginResult
+from app.plugins.base import (
+    Plugin,
+    PluginCapability,
+    PluginCategory,
+    PluginMetadata,
+    PluginResult,
+    get_active_runner,
+)
 
 _PORTS_PATTERN = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
 
@@ -120,6 +127,15 @@ class NmapPlugin(Plugin):
             f"{internal_timeout_ms}ms",
             target,
         ]
+
+        runner = get_active_runner()
+        if runner is not None:
+            return runner.run(
+                command,
+                timeout_seconds=timeout_seconds,
+                target=target,
+                metadata={"plugin": "nmap", "target": target, "ports": ports, "command": command},
+            )
 
         try:
             result = subprocess.run(  # noqa: S603 - fixed binary, list args, no shell

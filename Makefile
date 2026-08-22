@@ -1,7 +1,7 @@
 .PHONY: help up down logs restart build ps verify \
         lint format test test-backend lint-backend format-backend \
         lint-frontend format-frontend \
-        shell-api shell-db migrate makemigration
+        build-plugins shell-api shell-executor shell-db migrate makemigration
 
 help:
 	@echo "SPECTER_AI — common developer commands"
@@ -12,12 +12,14 @@ help:
 	@echo "  make restart         Restart all services"
 	@echo "  make ps              Show running service status"
 	@echo "  make verify          Run the full environment/stack verification toolkit"
+	@echo "  make build-plugins   Build the hardened plugin image (specter-plugins:local)"
 	@echo ""
 	@echo "  make lint            Lint backend + frontend"
 	@echo "  make format          Format backend + frontend"
 	@echo "  make test            Run backend test suite"
 	@echo ""
 	@echo "  make shell-api       Open a shell inside the api container"
+	@echo "  make shell-executor  Open a shell inside the executor container"
 	@echo "  make shell-db        Open a psql shell inside postgres"
 	@echo "  make migrate         Apply alembic migrations"
 	@echo "  make makemigration m=\"message\"   Autogenerate a new migration"
@@ -38,6 +40,9 @@ restart:
 
 build:
 	$(COMPOSE) build
+
+build-plugins:
+	$(COMPOSE) build plugins-image
 
 ps:
 	$(COMPOSE) ps
@@ -71,6 +76,9 @@ test: test-backend
 # --- Database -----------------------------------------------------------
 shell-api:
 	$(COMPOSE) exec api /bin/bash
+
+shell-executor:
+	$(COMPOSE) exec executor /bin/bash
 
 shell-db:
 	$(COMPOSE) exec postgres psql -U specter -d specter

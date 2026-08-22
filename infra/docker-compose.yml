@@ -126,6 +126,60 @@ services:
     depends_on:
       - api
 
+  # --------------------------------------------------------------------------
+  # M7.1 — hardened plugin image (build-once service). Runs all plugin commands
+  # inside the executor's ephemeral containers. Exits immediately; exists so
+  # `docker compose up --build` builds the image before the executor starts.
+  # --------------------------------------------------------------------------
+  plugins-image:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.plugins
+    image: specter-plugins:local
+    command: ["true"]
+    restart: "no"
+
+  # --------------------------------------------------------------------------
+  # M7.1 — executor: the ONLY service with access to the Docker socket.
+  # Runs plugin commands in hardened ephemeral containers (non-root,
+  # read-only rootfs, dropped capabilities, resource limits, target-only
+  # network policy enforced via nsenter + iptables into each container's own
+  # network namespace — requires pid:host + NET_ADMIN/NET_RAW/SYS_ADMIN).
+  # api / worker / beat have no docker.sock mount and never talk to Docker.
+  # --------------------------------------------------------------------------
+  executor:
+    build:
+      context: ../backend/executor
+      dockerfile: Dockerfile
+    image: specter-executor:local
+    env_file:
+      - ../.env
+    environment:
+      PLUGIN_IMAGE: specter-plugins:local
+      NETWORK_POLICY: target-only
+      DEFAULT_CPU_LIMIT: "1.0"
+      DEFAULT_MEMORY_LIMIT: "512m"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    pid: host
+    ports:
+      - "9010:8000"
+    depends_on:
+      plugins-image:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:
   minio_data:

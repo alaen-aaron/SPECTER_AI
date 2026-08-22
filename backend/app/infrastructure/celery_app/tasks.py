@@ -66,12 +66,23 @@ async def _execute_scan(scan_id: UUID) -> None:
         SqlAlchemyToolResultRepository,
     )
     from app.infrastructure.execution.engine import ExecutionEngine
+    from app.infrastructure.execution.executor_runner import ExecutorHttpRunner
     from app.infrastructure.storage.local_artifact_store import LocalArtifactStore
+    from app.plugins.base import CommandRunner
     from app.plugins.manager import PluginManager
     from app.plugins.normalizer_registry import normalizer_registry
     from app.plugins.registry import registry
 
     settings = get_settings()
+
+    runner: CommandRunner | None = None
+    if settings.EXECUTOR_ENABLED:
+        runner = ExecutorHttpRunner(
+            base_url=settings.EXECUTOR_URL,
+            image=settings.EXECUTOR_IMAGE,
+            cpu_limit=settings.EXECUTOR_CPU_LIMIT,
+            memory_limit=settings.EXECUTOR_MEMORY_LIMIT,
+        )
 
     # Deliberately NOT the process-wide cached `get_engine()`/
     # `get_session_factory()` singletons from `infrastructure/db/session.py`.
@@ -112,6 +123,7 @@ async def _execute_scan(scan_id: UUID) -> None:
                 ),
                 asset_service=asset_service,
                 graph_service=graph_service,
+                runner=runner,
             )
             await execution_engine.run(scan_id)
             await session.commit()
@@ -165,6 +177,7 @@ async def _execute_workflow(execution_id: UUID) -> None:
         SqlAlchemyWorkflowExecutionRepository,
         SqlAlchemyWorkflowStepRepository,
     )
+    from app.plugins.base import CommandRunner
     from app.plugins.manager import PluginManager
     from app.plugins.normalizer_registry import normalizer_registry
     from app.plugins.registry import registry
@@ -172,6 +185,17 @@ async def _execute_workflow(execution_id: UUID) -> None:
     settings = get_settings()
     engine = create_async_engine(str(settings.DATABASE_URL))
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    runner: CommandRunner | None = None
+    if settings.EXECUTOR_ENABLED:
+        from app.infrastructure.execution.executor_runner import ExecutorHttpRunner
+
+        runner = ExecutorHttpRunner(
+            base_url=settings.EXECUTOR_URL,
+            image=settings.EXECUTOR_IMAGE,
+            cpu_limit=settings.EXECUTOR_CPU_LIMIT,
+            memory_limit=settings.EXECUTOR_MEMORY_LIMIT,
+        )
 
     try:
         async with session_factory() as session:
@@ -182,7 +206,7 @@ async def _execute_workflow(execution_id: UUID) -> None:
                 graph_service=graph_service,
             )
             executor = WorkflowExecutor(
-                plugin_manager=PluginManager(registry),
+                plugin_manager=PluginManager(registry, runner=runner),
                 normalizer_registry=normalizer_registry,
                 execution_repository=SqlAlchemyWorkflowExecutionRepository(session),
                 step_repository=SqlAlchemyWorkflowStepRepository(session),
