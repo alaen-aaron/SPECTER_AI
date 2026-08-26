@@ -53,10 +53,19 @@ class ExecutorHttpRunner(CommandRunner):
         metadata: dict[str, Any] | None = None,
     ) -> PluginResult:
         execution_id = str(uuid.uuid4())
+        # M7.3 Phase 2 (additive): prefer REGISTERED, Scope-Guard-validated
+        # target identities supplied by the engine via metadata. The raw
+        # plugin target (which may be a URL) stays only inside `command`.
+        # Absent key -> legacy behavior (plugin string as sole target).
+        authorized = (metadata or {}).get("authorized_policy_targets")
+        if isinstance(authorized, list) and any(t for t in authorized):
+            policy_targets = [str(t) for t in authorized if t]
+        else:
+            policy_targets = [target] if target else []
         payload: dict[str, Any] = {
             "execution_id": execution_id,
             "command": command,
-            "targets": [target] if target else [],
+            "targets": policy_targets,
             "timeout_seconds": timeout_seconds,
             "image": self._image,
             "cpu_limit": self._cpu_limit,

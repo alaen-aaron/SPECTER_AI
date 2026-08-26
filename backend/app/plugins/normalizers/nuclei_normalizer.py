@@ -66,6 +66,10 @@ class NucleiNormalizer:
                     "severity": severity,
                     "description": description,
                     "matched_at": entry.get("matched-at"),
+                    # M7.3 Phase 1: promote the already-captured
+                    # matched-at URL into a structured field for
+                    # cross-tool correlation (additive; matched_at kept).
+                    "matched_url": entry.get("matched-at"),
                     "type": info.get("classification", {}).get(
                         "cve-id", entry.get("type", "")
                     ),

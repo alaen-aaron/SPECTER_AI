@@ -174,6 +174,9 @@ class GraphEdgeType(str, Enum):
     DERIVED_FROM = "derived_from"
     COMMUNICATES_WITH = "communicates_with"
     EVIDENCED_BY = "evidenced_by"
+    # M7.3 Phase 3: evidence-backed technology usage, created only from
+    # real HTTPX/WhatWeb observations on a resolved service.
+    USES = "uses"
 
 
 class WorkflowStatus(str, Enum):

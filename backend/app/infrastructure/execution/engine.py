@@ -28,6 +28,7 @@ matching assets (by target) and projected to the knowledge graph.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -41,6 +42,7 @@ from app.domain.entities import AuditLogEntry, Scan, ToolResult
 from app.domain.exceptions import DomainError
 from app.domain.repositories import AuditLogRepository, ScanRepository, ToolResultRepository
 from app.domain.value_objects import ScanStatus
+from app.infrastructure.execution.authorized_target_runner import AuthorizedTargetRunner
 from app.infrastructure.storage.local_artifact_store import LocalArtifactStore
 from app.plugins.base import CommandRunner
 from app.plugins.manager import PluginManager
@@ -68,6 +70,8 @@ class ExecutionEngine:
         asset_service: AssetService | None = None,
         graph_service: GraphService | None = None,
         runner: CommandRunner | None = None,
+        registered_target_values: Callable[[list[UUID]], Awaitable[list[str]]]
+        | None = None,
     ) -> None:
         self._scans = scan_repository
         self._scope_guard = scope_guard
@@ -81,6 +85,10 @@ class ExecutionEngine:
         self._asset_service = asset_service
         self._graph_service = graph_service
         self._runner = runner
+        # M7.3 Phase 2: resolves REGISTERED target identities (IP/CIDR/
+        # domain) for a scan's target_ids, used to build the executor's
+        # target-only policy independent of the plugin's raw config string.
+        self._registered_target_values = registered_target_values
 
     async def run(self, scan_id: UUID) -> None:
         scan = await self._scans.get(scan_id)
@@ -124,12 +132,29 @@ class ExecutionEngine:
         await self._write_audit(scan, "scan.started", {})
         metrics.inc_counter("scans_total", tags={"plugin": scan.plugin, "status": "started"})
 
+        # --- M7.3 Phase 2: build the executor policy target list from the
+        # scan's REGISTERED targets (already Scope-Guard-revalidated above),
+        # never from the plugin's raw config string. When no resolver or
+        # runner is configured (tests / subprocess fallback) behavior is
+        # unchanged.
+        active_runner = self._runner
+        if active_runner is not None and self._registered_target_values is not None:
+            try:
+                authorized_values = await self._registered_target_values(
+                    list(scan.target_ids)
+                )
+            except Exception as exc:  # noqa: BLE001 - fail closed to legacy path
+                log.warning("scan_registered_targets_unavailable", error=str(exc))
+                authorized_values = []
+            if authorized_values:
+                active_runner = AuthorizedTargetRunner(active_runner, authorized_values)
+
         try:
             result = self._plugin_manager.run(
                 scan.plugin,
                 scan.plugin_config,
                 self._default_timeout_seconds,
-                runner=self._runner,
+                runner=active_runner,
             )
         except Exception as exc:  # noqa: BLE001 - must never leave a scan stuck in `running`
             log.error("scan_execution_unexpected_error", error=str(exc))
@@ -323,14 +348,21 @@ class ExecutionEngine:
             asset_by_value[asset.value] = asset
 
         for finding in findings:
-            # Try to match finding to an asset by the tool_result target
+            # M7.3: skip fragile substring linking when correlation already
+            # set a deterministic asset_id (web findings linked to service).
             matched_asset = None
-            for asset in assets:
-                asset_val = asset.value.lower()
-                target_lower = target.lower()
-                if target_lower and (target_lower in asset_val or asset_val in target_lower):
-                    matched_asset = asset
-                    break
+            if getattr(finding, "asset_id", None) is not None:
+                for asset in assets:
+                    if asset.id == finding.asset_id:
+                        matched_asset = asset
+                        break
+            else:
+                for asset in assets:
+                    asset_val = asset.value.lower()
+                    target_lower = target.lower()
+                    if target_lower and (target_lower in asset_val or asset_val in target_lower):
+                        matched_asset = asset
+                        break
 
             if matched_asset is not None:
                 finding.asset_id = matched_asset.id
@@ -348,10 +380,12 @@ class ExecutionEngine:
                     finding.title,
                     severity=finding.severity.value,
                 )
-                # Link finding node → asset node
-                if matched_asset is not None:
+                # Link finding node → asset node via deterministic path
+                # (finding.asset_id set by correlation) or legacy substring.
+                link_asset = matched_asset
+                if link_asset is not None:
                     asset_node = await self._graph_service.find_node_by_source(
-                        project_id, "assets", matched_asset.id
+                        project_id, "assets", link_asset.id
                     )
                     if asset_node is not None:
                         from app.domain.value_objects import GraphEdgeType
@@ -361,6 +395,14 @@ class ExecutionEngine:
                             asset_node.id,
                             GraphEdgeType.EVIDENCED_BY,
                         )
+                        # M7.3: deterministic VULNERABLE_TO for web findings
+                        if getattr(finding, "asset_id", None) is not None:
+                            await self._graph_service.add_edge(
+                                project_id,
+                                finding_node.id,
+                                asset_node.id,
+                                GraphEdgeType.VULNERABLE_TO,
+                            )
             except Exception as exc:  # noqa: BLE001 — graph projection must not fail the scan
                 logger.warning(
                     "finding_graph_projection_failed",

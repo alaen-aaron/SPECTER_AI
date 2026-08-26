@@ -25,6 +25,7 @@ def _to_entity(row: FindingModel) -> Finding:
         cvss_score=float(row.cvss_score) if row.cvss_score is not None else None,
         dedup_key=row.dedup_key or "",
         created_at=row.created_at,
+        enrichment=dict(row.enrichment) if row.enrichment else None,
     )
 
 
@@ -43,6 +44,7 @@ class SqlAlchemyFindingRepository:
             cvss_score=finding.cvss_score,
             dedup_key=finding.dedup_key,
             asset_id=finding.asset_id,
+            enrichment=finding.enrichment,
         )
         self._session.add(model)
         await self._session.flush()

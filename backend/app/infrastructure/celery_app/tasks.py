@@ -44,6 +44,9 @@ async def _execute_scan(scan_id: UUID) -> None:
     from app.application.graph_service import GraphService
     from app.application.scope_guard_service import ScopeGuardService
     from app.core.config import get_settings
+    from app.infrastructure.db.repositories.asset_observation_repository import (
+        SqlAlchemyAssetObservationRepository,
+    )
     from app.infrastructure.db.repositories.asset_repository import (
         SqlAlchemyAssetRepository,
     )
@@ -101,15 +104,29 @@ async def _execute_scan(scan_id: UUID) -> None:
         async with session_factory() as session:
             graph_repo = SqlAlchemyGraphRepository(session)
             graph_service = GraphService(graph_repo)
+            target_repo_for_policy = SqlAlchemyTargetRepository(session)
+
+            async def _registered_target_values(
+                target_ids: list[UUID],
+            ) -> list[str]:
+                """M7.3 Phase 2: registered identities for executor policy."""
+                values: list[str] = []
+                for tid in target_ids:
+                    t = await target_repo_for_policy.get_by_id(tid)
+                    if t is not None:
+                        values.append(t.value)
+                return values
+
             asset_service = AssetService(
                 asset_repository=SqlAlchemyAssetRepository(session),
                 graph_service=graph_service,
+                observation_repository=SqlAlchemyAssetObservationRepository(session),
             )
             execution_engine = ExecutionEngine(
                 scan_repository=SqlAlchemyScanRepository(session),
                 scope_guard=ScopeGuardService(
                     project_repository=SqlAlchemyProjectRepository(session),
-                    target_repository=SqlAlchemyTargetRepository(session),
+                    target_repository=target_repo_for_policy,
                     authorization_repository=SqlAlchemyAuthorizationRecordRepository(session),
                 ),
                 plugin_manager=PluginManager(registry),
@@ -119,11 +136,15 @@ async def _execute_scan(scan_id: UUID) -> None:
                 normalizer_registry=normalizer_registry,
                 default_timeout_seconds=settings.SCAN_DEFAULT_TIMEOUT_SECONDS,
                 correlation_service=CorrelationService(
-                    SqlAlchemyFindingRepository(session)
+                    finding_repository=SqlAlchemyFindingRepository(session),
+                    asset_repository=SqlAlchemyAssetRepository(session),
+                    observation_repository=SqlAlchemyAssetObservationRepository(session),
+                    graph_service=graph_service,
                 ),
                 asset_service=asset_service,
                 graph_service=graph_service,
                 runner=runner,
+                registered_target_values=_registered_target_values,
             )
             await execution_engine.run(scan_id)
             await session.commit()
@@ -158,6 +179,9 @@ async def _execute_workflow(execution_id: UUID) -> None:
     from app.application.graph_service import GraphService
     from app.application.workflow_executor import WorkflowExecutor
     from app.core.config import get_settings
+    from app.infrastructure.db.repositories.asset_observation_repository import (
+        SqlAlchemyAssetObservationRepository,
+    )
     from app.infrastructure.db.repositories.asset_repository import (
         SqlAlchemyAssetRepository,
     )
@@ -204,6 +228,7 @@ async def _execute_workflow(execution_id: UUID) -> None:
             asset_service = AssetService(
                 asset_repository=SqlAlchemyAssetRepository(session),
                 graph_service=graph_service,
+                observation_repository=SqlAlchemyAssetObservationRepository(session),
             )
             executor = WorkflowExecutor(
                 plugin_manager=PluginManager(registry, runner=runner),
@@ -213,7 +238,10 @@ async def _execute_workflow(execution_id: UUID) -> None:
                 scan_repository=SqlAlchemyScanRepository(session),
                 tool_result_repository=SqlAlchemyToolResultRepository(session),
                 correlation_service=CorrelationService(
-                    SqlAlchemyFindingRepository(session)
+                    finding_repository=SqlAlchemyFindingRepository(session),
+                    asset_repository=SqlAlchemyAssetRepository(session),
+                    observation_repository=SqlAlchemyAssetObservationRepository(session),
+                    graph_service=graph_service,
                 ),
                 default_timeout_seconds=settings.SCAN_DEFAULT_TIMEOUT_SECONDS,
                 asset_service=asset_service,

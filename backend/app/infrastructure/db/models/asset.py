@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -38,6 +38,9 @@ class AssetModel(Base):
     metadata_: Mapped[dict[str, object]] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict
     )
+    # --- M7.3 Phase 2: canonical correlation identity (nullable; display
+    # value stays in `value`).
+    identity_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), nullable=False
@@ -46,4 +49,12 @@ class AssetModel(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "asset_type", "value", name="uq_asset_dedup"),
         Index("idx_assets_project_type", "project_id", "asset_type"),
+        Index(
+            "uq_asset_identity",
+            "project_id",
+            "asset_type",
+            "identity_key",
+            unique=True,
+            postgresql_where=text("identity_key IS NOT NULL"),
+        ),
     )

@@ -9,10 +9,14 @@ application/worker startup alongside `app.plugins.builtin`.
 from __future__ import annotations
 
 from app.plugins.normalizer_registry import normalizer_registry
+from app.plugins.normalizers.httpx_normalizer import HttpxNormalizer
 from app.plugins.normalizers.nmap_normalizer import NmapNormalizer
 from app.plugins.normalizers.nuclei_normalizer import NucleiNormalizer
 from app.plugins.normalizers.ping_normalizer import PingNormalizer
+from app.plugins.normalizers.whatweb_normalizer import WhatwebNormalizer
 
 normalizer_registry.register(PingNormalizer())
 normalizer_registry.register(NmapNormalizer())
 normalizer_registry.register(NucleiNormalizer())
+normalizer_registry.register(HttpxNormalizer())
+normalizer_registry.register(WhatwebNormalizer())

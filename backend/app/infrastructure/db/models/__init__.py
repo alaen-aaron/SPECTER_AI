@@ -17,6 +17,7 @@ from app.infrastructure.db.models.ai_engine import (
     RiskScoreModel,
 )
 from app.infrastructure.db.models.asset import AssetModel
+from app.infrastructure.db.models.asset_observation import AssetObservationModel
 from app.infrastructure.db.models.audit_log import AuditLogModel
 from app.infrastructure.db.models.authorization import AuthorizationRecordModel
 from app.infrastructure.db.models.evidence import EvidenceModel
@@ -43,6 +44,7 @@ from app.infrastructure.db.models.workflow import (
 __all__ = [
     "AIContextMemoryModel",
     "AssetModel",
+    "AssetObservationModel",
     "AuditLogModel",
     "AuthorizationRecordModel",
     "EvidenceModel",

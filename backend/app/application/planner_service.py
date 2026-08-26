@@ -95,6 +95,58 @@ class PlanningContext:
     recent_actions: tuple[PlannedAction, ...]
 
     def summary(self) -> dict[str, object]:
+        # M7.3: aggregate correlated services for planner context
+        services: list[dict[str, object]] = []
+        tech_count = 0
+        svc_findings: dict[str, list[str]] = {}  # service_identity → titles
+        tech_for_svc: dict[str, list[str]] = {}  # service_identity → tech names
+
+        for a in self.assets:
+            if a.asset_type.value == "technology":
+                tech_count += 1
+                svc_id = (a.metadata or {}).get("service_identity", "")
+                if svc_id and isinstance(svc_id, str):
+                    tech_for_svc.setdefault(svc_id, []).append(a.value)
+
+        high_crit_findings = [
+            f for f in self.findings
+            if f.severity in (Severity.HIGH, Severity.CRITICAL)
+        ]
+        for f in high_crit_findings:
+            # Map finding to service via asset_id enrichment
+            enrichment = getattr(f, "enrichment", None) or {}
+            if isinstance(enrichment, dict):
+                svc_id = enrichment.get("service_identity", "")
+                if svc_id and isinstance(svc_id, str):
+                    svc_findings.setdefault(svc_id, []).append(f.title)
+            # Also map via asset asset_type=SERVICE
+            if f.asset_id is not None:
+                for a in self.assets:
+                    if a.id == f.asset_id and a.identity_key:
+                        svc_findings.setdefault(a.identity_key, []).append(f.title)
+
+        # Build the services list from SERVICE assets with identity_key
+        seen_svcs: set[str] = set()
+        for a in self.assets:
+            if a.asset_type.value != "service" or not a.identity_key:
+                continue
+            if a.identity_key in seen_svcs:
+                continue
+            seen_svcs.add(a.identity_key)
+            services.append({
+                "identity": a.identity_key,
+                "protocol": (a.metadata or {}).get("scheme", "tcp"),
+                "technologies": tech_for_svc.get(a.identity_key, []),
+                "findings": svc_findings.get(a.identity_key, []),
+            })
+
+        web_svc_count = len([
+            a for a in self.assets
+            if a.asset_type.value == "service"
+            and isinstance(a.identity_key, str)
+            and "/http" in a.identity_key
+        ])
+
         return {
             "target_count": len(self.targets),
             "asset_count": len(self.assets),
@@ -105,6 +157,12 @@ class PlanningContext:
                 if f.severity in (Severity.HIGH, Severity.CRITICAL)
             ),
             "recent_action_count": len(self.recent_actions),
+            "service_count": sum(
+                1 for a in self.assets if a.asset_type.value == "service"
+            ),
+            "web_service_count": web_svc_count,
+            "technology_count": tech_count,
+            "services": services,
         }
 
 

@@ -4,9 +4,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from app.domain.entities import Asset, ToolResult
+from app.domain.asset_identity import normalize_host, service_identity
+from app.domain.entities import Asset, AssetObservation, ToolResult
 from app.domain.exceptions import AssetNotFoundError
-from app.domain.repositories import AssetRepository
+from app.domain.repositories import (
+    AssetObservationRepository,
+    AssetRepository,
+)
 from app.domain.value_objects import AssetType, GraphEdgeType
 
 if TYPE_CHECKING:
@@ -18,9 +22,12 @@ class AssetService:
         self,
         asset_repository: AssetRepository,
         graph_service: GraphService | None = None,
+        observation_repository: AssetObservationRepository | None = None,
     ) -> None:
         self._assets = asset_repository
         self._graph = graph_service
+        # M7.3 Phase 2: optional provenance sink (AssetObservationRepository).
+        self._observations = observation_repository
 
     async def list_for_project(
         self,
@@ -76,7 +83,42 @@ class AssetService:
         if self._graph is not None and upserted:
             await self._project_assets_to_graph(project_id, upserted)
 
+        # --- M7.3 Phase 2: provenance — one idempotent observation per
+        # (ToolResult, Asset), answering "why does SPECTER believe this
+        # asset exists?" without relying on the overwritable
+        # source_scan_id.
+        if self._observations is not None:
+            await self._record_observations(tool_result, plugin, upserted)
+
         return upserted
+
+    async def _record_observations(
+        self,
+        tool_result: ToolResult,
+        plugin: str,
+        assets: list[Asset],
+    ) -> None:
+        assert self._observations is not None
+        details: dict[str, object] = {"plugin": plugin}
+        payload = tool_result.normalized_payload
+        for key in ("reachable", "host_up", "open_port_count", "status_code"):
+            if key in payload:
+                details[key] = payload[key]
+        for asset in assets:
+            if await self._observations.exists_for(tool_result.id, asset.id):
+                continue
+            await self._observations.add(
+                AssetObservation(
+                    id=uuid4(),
+                    project_id=asset.project_id,
+                    asset_id=asset.id,
+                    tool_result_id=tool_result.id,
+                    scan_id=tool_result.scan_id,
+                    plugin=plugin,
+                    observed_at=datetime.now(UTC),
+                    details=dict(details),
+                )
+            )
 
     async def _project_assets_to_graph(
         self, project_id: UUID, assets: list[Asset]
@@ -137,6 +179,9 @@ class AssetService:
         if existing is not None:
             existing.last_seen = now
             existing.source_scan_id = tool_result.scan_id
+            if existing.identity_key is None:
+                # Legacy row: backfill canonical identity in place.
+                existing.identity_key = normalize_host(host)
             await self._assets.update(existing)
             return existing
 
@@ -150,6 +195,7 @@ class AssetService:
             source_scan_id=tool_result.scan_id,
             metadata={"reachable": payload.get("reachable")},
             created_at=now,
+            identity_key=normalize_host(host),
         )
         await self._assets.upsert(asset)
         return asset
@@ -172,6 +218,8 @@ class AssetService:
             existing.last_seen = now
             existing.source_scan_id = tool_result.scan_id
             existing.metadata["host_up"] = payload.get("host_up")
+            if existing.identity_key is None:
+                existing.identity_key = normalize_host(target)
             await self._assets.update(existing)
             return existing
 
@@ -185,6 +233,7 @@ class AssetService:
             source_scan_id=tool_result.scan_id,
             metadata={"host_up": payload.get("host_up")},
             created_at=now,
+            identity_key=normalize_host(target),
         )
         await self._assets.upsert(asset)
         return asset
@@ -201,7 +250,7 @@ class AssetService:
         service = port_info.get("service", "")
         protocol = port_info.get("protocol", "tcp")
         version = port_info.get("version", "")
-        if port is None:
+        if not isinstance(port, int) or isinstance(port, bool):
             return None
 
         value = f"{service}://{target}:{port}/{protocol}"
@@ -209,10 +258,17 @@ class AssetService:
         existing = await self._assets.get_by_dedup(
             project_id, AssetType.SERVICE, value
         )
+        # Canonical identity is INDEPENDENT of nmap's service-name guess:
+        # "ppp?://h:p/tcp" and a later "http://h:p" share one identity.
+        identity = service_identity(
+            host=target, port=int(port), transport=str(protocol)
+        )
         if existing is not None:
             existing.last_seen = now
             existing.source_scan_id = tool_result.scan_id
             existing.metadata["version"] = version
+            if existing.identity_key is None:
+                existing.identity_key = identity
             await self._assets.update(existing)
             return existing
 
@@ -231,6 +287,7 @@ class AssetService:
                 "version": version,
             },
             created_at=now,
+            identity_key=identity,
         )
         await self._assets.upsert(asset)
         return asset

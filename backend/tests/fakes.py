@@ -22,6 +22,7 @@ from uuid import UUID
 
 from app.domain.entities import (
     Asset,
+    AssetObservation,
     AuditLogEntry,
     AuthorizationRecord,
     Evidence,
@@ -342,8 +343,18 @@ class FakeAssetRepository:
     def __init__(self) -> None:
         self._assets: dict[UUID, Asset] = {}
 
+    @staticmethod
+    def _snapshot(asset: Asset) -> Asset:
+        """Store/return detached copies so caller-side mutations of a
+        previously returned entity can never rewrite history before an
+        update() call — mirroring real DB column semantics."""
+        from dataclasses import replace
+
+        return replace(asset)
+
     async def get_by_id(self, asset_id: UUID) -> Asset | None:
-        return self._assets.get(asset_id)
+        asset = self._assets.get(asset_id)
+        return self._snapshot(asset) if asset else None
 
     async def list_for_project(
         self,
@@ -361,10 +372,21 @@ class FakeAssetRepository:
         return results[: limit + 1]
 
     async def add(self, asset: Asset) -> None:
-        self._assets[asset.id] = asset
+        self._assets[asset.id] = self._snapshot(asset)
 
     async def update(self, asset: Asset) -> None:
-        self._assets[asset.id] = asset
+        existing = self._assets.get(asset.id)
+        if existing is None:
+            return
+        # Refresh mutable fields; NEVER overwrite identity_key with None.
+        existing.asset_type = asset.asset_type
+        existing.value = asset.value
+        existing.last_seen = asset.last_seen
+        existing.in_scope = asset.in_scope
+        existing.source_scan_id = asset.source_scan_id
+        existing.metadata = asset.metadata
+        if asset.identity_key is not None:
+            existing.identity_key = asset.identity_key
 
     async def upsert(self, asset: Asset) -> Asset:
         for existing in self._assets.values():
@@ -377,6 +399,25 @@ class FakeAssetRepository:
                 existing.source_scan_id = asset.source_scan_id
                 existing.metadata = asset.metadata
                 existing.in_scope = asset.in_scope
+                if asset.identity_key is not None:
+                    existing.identity_key = asset.identity_key
+                return self._snapshot(existing)
+        self._assets[asset.id] = self._snapshot(asset)
+        return self._snapshot(asset)
+
+    async def upsert(self, asset: Asset) -> Asset:
+        for existing in self._assets.values():
+            if (
+                existing.project_id == asset.project_id
+                and existing.asset_type == asset.asset_type
+                and existing.value == asset.value
+            ):
+                existing.last_seen = asset.last_seen
+                existing.source_scan_id = asset.source_scan_id
+                existing.metadata = asset.metadata
+                existing.in_scope = asset.in_scope
+                if asset.identity_key is not None:
+                    existing.identity_key = asset.identity_key
                 return existing
         self._assets[asset.id] = asset
         return asset
@@ -390,8 +431,50 @@ class FakeAssetRepository:
                 and asset.asset_type == asset_type
                 and asset.value == value
             ):
-                return asset
+                return self._snapshot(asset)
         return None
+
+    async def get_by_identity(
+        self, project_id: UUID, asset_type: AssetType, identity_key: str
+    ) -> Asset | None:
+        for asset in self._assets.values():
+            if (
+                asset.project_id == project_id
+                and asset.asset_type == asset_type
+                and asset.identity_key == identity_key
+            ):
+                return self._snapshot(asset)
+        return None
+
+
+class FakeAssetObservationRepository:
+    """M7.3 Phase 2: in-memory provenance store mirroring the DB unique
+    constraint uq(tool_result_id, asset_id)."""
+
+    def __init__(self) -> None:
+        self._observations: dict[UUID, AssetObservation] = {}
+
+    async def add(self, observation: AssetObservation) -> None:
+        self._observations[observation.id] = observation
+
+    async def exists_for(self, tool_result_id: UUID, asset_id: UUID) -> bool:
+        return any(
+            o.tool_result_id == tool_result_id and o.asset_id == asset_id
+            for o in self._observations.values()
+        )
+
+    async def list_for_asset(
+        self, asset_id: UUID, limit: int = 100
+    ) -> list[AssetObservation]:
+        found = [
+            o for o in self._observations.values() if o.asset_id == asset_id
+        ]
+        found.sort(key=lambda o: o.observed_at or datetime.min.replace(tzinfo=UTC), reverse=True)
+        return found[:limit]
+
+    @property
+    def count(self) -> int:
+        return len(self._observations)
 
 
 class FakeFindingRepository:

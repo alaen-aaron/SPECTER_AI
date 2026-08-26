@@ -22,6 +22,7 @@ from uuid import UUID
 from app.domain.entities import (
     AIContextMemory,
     Asset,
+    AssetObservation,
     AuditLogEntry,
     AuthorizationRecord,
     Evidence,
@@ -178,6 +179,19 @@ class AssetRepository(Protocol):
     async def get_by_dedup(
         self, project_id: UUID, asset_type: AssetType, value: str
     ) -> Asset | None: ...
+    async def get_by_identity(
+        self, project_id: UUID, asset_type: AssetType, identity_key: str
+    ) -> Asset | None: ...
+
+
+class AssetObservationRepository(Protocol):
+    """M7.3 Phase 2 — append-only provenance for (ToolResult, Asset)."""
+
+    async def add(self, observation: AssetObservation) -> None: ...
+    async def exists_for(self, tool_result_id: UUID, asset_id: UUID) -> bool: ...
+    async def list_for_asset(
+        self, asset_id: UUID, limit: int = 100
+    ) -> list[AssetObservation]: ...
 
 
 class FindingRepository(Protocol):

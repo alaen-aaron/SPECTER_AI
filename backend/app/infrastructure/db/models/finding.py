@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Column, ForeignKey, Index, Numeric, String, Table, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -49,6 +50,11 @@ class FindingModel(Base):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="open")
     cvss_score: Mapped[float | None] = mapped_column(Numeric(3, 1), nullable=True)
     dedup_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # --- M7.3 Phase 2 foundation: cross-tool enrichment payload (Phase 3
+    # populates it).
+    enrichment: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True, default=None
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), nullable=False

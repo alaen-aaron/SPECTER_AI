@@ -267,6 +267,9 @@ class Asset:
     source_scan_id: UUID | None = None
     metadata: dict[str, object] = field(default_factory=dict)
     created_at: datetime | None = None
+    # --- M7.3 Phase 2: canonical correlation identity (display value in
+    # `value` is untouched; this is what cross-tool merging keys on).
+    identity_key: str | None = None
 
 
 @dataclass(slots=True)
@@ -289,6 +292,9 @@ class Finding:
     dedup_key: str = ""
     tool_result_ids: list[UUID] = field(default_factory=list)
     created_at: datetime | None = None
+    # --- M7.3 Phase 2 foundation: cross-tool enrichment payload (Phase 3
+    # populates it; schema/repository compatibility only at this stage).
+    enrichment: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -306,6 +312,26 @@ class Evidence:
     filename: str | None = None
     file_size: int | None = None
     created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class AssetObservation:
+    """
+    M7.3 Phase 2 provenance record: one (ToolResult, Asset) sighting.
+
+    Answers "why does SPECTER believe this asset exists?" without
+    relying on `Asset.source_scan_id`, which is overwritten on every
+    observation. Structured details only — never raw stdout.
+    """
+
+    id: UUID
+    project_id: UUID
+    asset_id: UUID
+    tool_result_id: UUID
+    scan_id: UUID
+    plugin: str
+    observed_at: datetime | None = None
+    details: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
