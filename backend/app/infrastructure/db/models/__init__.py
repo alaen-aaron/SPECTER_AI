@@ -18,6 +18,7 @@ from app.infrastructure.db.models.ai_engine import (
 )
 from app.infrastructure.db.models.asset import AssetModel
 from app.infrastructure.db.models.asset_observation import AssetObservationModel
+from app.infrastructure.db.models.autonomous import AutonomousRunActionModel, AutonomousRunModel
 from app.infrastructure.db.models.audit_log import AuditLogModel
 from app.infrastructure.db.models.authorization import AuthorizationRecordModel
 from app.infrastructure.db.models.evidence import EvidenceModel
@@ -45,6 +46,8 @@ __all__ = [
     "AIContextMemoryModel",
     "AssetModel",
     "AssetObservationModel",
+    "AutonomousRunActionModel",
+    "AutonomousRunModel",
     "AuditLogModel",
     "AuthorizationRecordModel",
     "EvidenceModel",

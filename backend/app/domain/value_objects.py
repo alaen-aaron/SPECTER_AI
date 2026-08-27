@@ -251,3 +251,72 @@ class RiskScoreSource(str, Enum):
 
     COMPUTED = "computed"
     AI_RATIONALE = "ai_rationale"
+
+
+# --- Autonomous Orchestration (M7.4) ----------------------------------------
+
+
+class AutonomousRunStatus(str, Enum):
+    """Lifecycle state for an autonomous scan run (M7.4)."""
+
+    CREATED = "created"
+    PLANNING = "planning"
+    AWAITING_APPROVAL = "awaiting_approval"
+    EXECUTING = "executing"
+    OBSERVING = "observing"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+# Valid forward transitions — single source of truth for the state machine.
+VALID_AUTONOMOUS_TRANSITIONS: dict[
+    AutonomousRunStatus, frozenset[AutonomousRunStatus]
+] = {
+    AutonomousRunStatus.CREATED: frozenset(
+        {AutonomousRunStatus.PLANNING, AutonomousRunStatus.FAILED, AutonomousRunStatus.CANCELLED}
+    ),
+    AutonomousRunStatus.PLANNING: frozenset(
+        {
+            AutonomousRunStatus.AWAITING_APPROVAL,
+            AutonomousRunStatus.FAILED,
+            AutonomousRunStatus.CANCELLED,
+        }
+    ),
+    AutonomousRunStatus.AWAITING_APPROVAL: frozenset(
+        {AutonomousRunStatus.EXECUTING, AutonomousRunStatus.CANCELLED}
+    ),
+    AutonomousRunStatus.EXECUTING: frozenset(
+        {
+            AutonomousRunStatus.OBSERVING,
+            AutonomousRunStatus.COMPLETED,
+            AutonomousRunStatus.FAILED,
+            AutonomousRunStatus.CANCELLED,
+        }
+    ),
+    AutonomousRunStatus.OBSERVING: frozenset(
+        {
+            AutonomousRunStatus.PLANNING,
+            AutonomousRunStatus.COMPLETED,
+            AutonomousRunStatus.FAILED,
+            AutonomousRunStatus.CANCELLED,
+        }
+    ),
+    AutonomousRunStatus.COMPLETED: frozenset(),
+    AutonomousRunStatus.CANCELLED: frozenset(),
+    AutonomousRunStatus.FAILED: frozenset(),
+}
+
+AUTONOMOUS_TERMINAL_STATUSES = frozenset({
+    AutonomousRunStatus.COMPLETED,
+    AutonomousRunStatus.CANCELLED,
+    AutonomousRunStatus.FAILED,
+})
+
+
+class ActionCategory(str, Enum):
+    """Action risk classification for approval policy (M7.4)."""
+
+    CATEGORY_0 = "category_0"  # Passive — auto-approved
+    CATEGORY_1 = "category_1"  # Active — human approval required
+    CATEGORY_2 = "category_2"  # Destructive — never approved

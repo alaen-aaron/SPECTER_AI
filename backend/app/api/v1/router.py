@@ -13,6 +13,7 @@ from app.api.v1.routers import (
     ai_engine,
     assets,
     auth,
+    autonomous,
     authorization,
     evidence,
     findings,
@@ -47,3 +48,4 @@ api_v1_router.include_router(workflows.router)
 api_v1_router.include_router(schedules.router)
 api_v1_router.include_router(ai_engine.router)
 api_v1_router.include_router(plugins.router)
+api_v1_router.include_router(autonomous.router)

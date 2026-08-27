@@ -25,6 +25,8 @@ from app.domain.entities import (
     AssetObservation,
     AuditLogEntry,
     AuthorizationRecord,
+    AutonomousRun,
+    AutonomousRunAction,
     Evidence,
     Finding,
     GraphEdge,
@@ -51,6 +53,7 @@ from app.domain.entities import (
 )
 from app.domain.value_objects import (
     AssetType,
+    AutonomousRunStatus,
     FindingStatus,
     GraphEdgeType,
     GraphNodeType,
@@ -366,3 +369,33 @@ class AIContextMemoryRepository(Protocol):
         self, project_id: UUID, memory_type: str
     ) -> list[AIContextMemory]: ...
     async def delete(self, memory_id: UUID) -> None: ...
+
+
+# --- Autonomous Orchestration (M7.4) ----------------------------------------
+
+
+class AutonomousRunRepository(Protocol):
+    async def create(self, run: AutonomousRun) -> None: ...
+    async def get(self, run_id: UUID) -> AutonomousRun | None: ...
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        status: AutonomousRunStatus | None = None,
+        limit: int = 20,
+        cursor: datetime | None = None,
+    ) -> list[AutonomousRun]: ...
+    async def get_active_for_project(self, project_id: UUID) -> AutonomousRun | None: ...
+    async def update(self, run: AutonomousRun) -> None: ...
+    async def count_actions(self, run_id: UUID) -> int: ...
+
+
+class AutonomousRunActionRepository(Protocol):
+    async def create(self, action: AutonomousRunAction) -> None: ...
+    async def get(self, action_id: UUID) -> AutonomousRunAction | None: ...
+    async def list_for_run(
+        self,
+        run_id: UUID,
+        status: str | None = None,
+    ) -> list[AutonomousRunAction]: ...
+    async def update(self, action: AutonomousRunAction) -> None: ...
+    async def get_last_action_fingerprint(self, run_id: UUID) -> str | None: ...

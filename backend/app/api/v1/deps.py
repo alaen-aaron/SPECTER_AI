@@ -23,6 +23,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.action_validator import ActionProposalValidator
+from app.application.autonomous_service import AutonomousService
 
 # AI Decision Engine services (Phase 4)
 from app.application.ai_reporter_service import AIReporterService
@@ -73,6 +74,15 @@ from app.infrastructure.db.repositories.ai_context_memory_repository import (
     SqlAlchemyAIContextMemoryRepository,
 )
 from app.infrastructure.db.repositories.asset_repository import SqlAlchemyAssetRepository
+from app.infrastructure.db.repositories.asset_observation_repository import (
+    SqlAlchemyAssetObservationRepository,
+)
+from app.infrastructure.db.repositories.autonomous_run_action_repository import (
+    SqlAlchemyAutonomousRunActionRepository,
+)
+from app.infrastructure.db.repositories.autonomous_run_repository import (
+    SqlAlchemyAutonomousRunRepository,
+)
 from app.infrastructure.db.repositories.audit_log_repository import SqlAlchemyAuditLogRepository
 from app.infrastructure.db.repositories.authorization_repository import (
     SqlAlchemyAuthorizationRecordRepository,
@@ -1021,3 +1031,27 @@ def require_report_version_diff_permission() -> (
         return await project_service.require_member(report.project_id, current_user.id)
 
     return _checker
+
+
+# --- Autonomous Orchestration (M7.4) ----------------------------------------
+
+
+def get_autonomous_run_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyAutonomousRunRepository:
+    return SqlAlchemyAutonomousRunRepository(session)
+
+
+def get_autonomous_action_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyAutonomousRunActionRepository:
+    return SqlAlchemyAutonomousRunActionRepository(session)
+
+
+def get_autonomous_service(
+    run_repo: SqlAlchemyAutonomousRunRepository = Depends(get_autonomous_run_repository),
+    action_repo: SqlAlchemyAutonomousRunActionRepository = Depends(
+        get_autonomous_action_repository
+    ),
+) -> AutonomousService:
+    return AutonomousService(run_repo=run_repo, action_repo=action_repo)

@@ -25,6 +25,8 @@ from app.domain.entities import (
     AssetObservation,
     AuditLogEntry,
     AuthorizationRecord,
+    AutonomousRun,
+    AutonomousRunAction,
     Evidence,
     Finding,
     GraphEdge,
@@ -49,6 +51,7 @@ from app.domain.entities import (
 from app.domain.value_objects import (
     AssetType,
     AuthorizationStatus,
+    AutonomousRunStatus,
     FindingStatus,
     GraphEdgeType,
     GraphNodeType,
@@ -1053,3 +1056,102 @@ class FakeAIContextMemoryRepository:
 
     async def delete(self, memory_id: UUID) -> None:
         self._memories.pop(memory_id, None)
+
+
+# --- Autonomous Orchestration fakes (M7.4) ----------------------------------
+
+
+class FakeAutonomousRunRepository:
+    def __init__(self) -> None:
+        self._runs: dict[UUID, AutonomousRun] = {}
+
+    async def create(self, run: AutonomousRun) -> None:
+        self._runs[run.id] = run
+
+    async def get(self, run_id: UUID) -> AutonomousRun | None:
+        return self._runs.get(run_id)
+
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        status: AutonomousRunStatus | None = None,
+        limit: int = 20,
+        cursor: datetime | None = None,
+    ) -> list[AutonomousRun]:
+        results = [
+            r for r in self._runs.values()
+            if r.project_id == project_id
+            and (status is None or r.status == status)
+        ]
+        results.sort(
+            key=lambda r: r.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        if cursor is not None:
+            results = [
+                r for r in results
+                if (r.created_at or datetime.min.replace(tzinfo=UTC)) < cursor
+            ]
+        return results[:limit]
+
+    async def get_active_for_project(self, project_id: UUID) -> AutonomousRun | None:
+        terminal = {
+            AutonomousRunStatus.COMPLETED,
+            AutonomousRunStatus.CANCELLED,
+            AutonomousRunStatus.FAILED,
+        }
+        for run in self._runs.values():
+            if run.project_id == project_id and run.status not in terminal:
+                return run
+        return None
+
+    async def update(self, run: AutonomousRun) -> None:
+        self._runs[run.id] = run
+
+    async def count_actions(self, run_id: UUID) -> int:
+        return sum(1 for a in self._action_runs if a.run_id == run_id)
+
+    # Set by FakeAutonomousRunActionRepository for count_actions
+    _action_runs: list[AutonomousRunAction] = []
+
+
+class FakeAutonomousRunActionRepository:
+    def __init__(self) -> None:
+        self._actions: dict[UUID, AutonomousRunAction] = {}
+        self._run_repo: FakeAutonomousRunRepository | None = None
+
+    def set_run_repo(self, run_repo: FakeAutonomousRunRepository) -> None:
+        self._run_repo = run_repo
+
+    async def create(self, action: AutonomousRunAction) -> None:
+        self._actions[action.id] = action
+        if self._run_repo is not None:
+            self._run_repo._action_runs.append(action)
+
+    async def get(self, action_id: UUID) -> AutonomousRunAction | None:
+        return self._actions.get(action_id)
+
+    async def list_for_run(
+        self,
+        run_id: UUID,
+        status: str | None = None,
+    ) -> list[AutonomousRunAction]:
+        results = [
+            a for a in self._actions.values()
+            if a.run_id == run_id and (status is None or a.status == status)
+        ]
+        results.sort(key=lambda a: (a.cycle, a.created_at or datetime.min.replace(tzinfo=UTC)))
+        return results
+
+    async def update(self, action: AutonomousRunAction) -> None:
+        self._actions[action.id] = action
+
+    async def get_last_action_fingerprint(self, run_id: UUID) -> str | None:
+        candidates = [a for a in self._actions.values() if a.run_id == run_id]
+        if not candidates:
+            return None
+        last = max(
+            candidates,
+            key=lambda a: (a.cycle, a.created_at or datetime.min.replace(tzinfo=UTC)),
+        )
+        return f"{last.action_type}:{last.plugin}:{last.target_ids}:{last.status}"

@@ -15,12 +15,16 @@ from datetime import date, datetime
 from uuid import UUID
 
 from app.domain.value_objects import (
+    AUTONOMOUS_TERMINAL_STATUSES,
     SCAN_CANCELLABLE_STATUSES,
     SCAN_TERMINAL_STATUSES,
+    VALID_AUTONOMOUS_TRANSITIONS,
     VALID_PROJECT_TRANSITIONS,
+    ActionCategory,
     AIOutputReviewStatus,
     AssetType,
     AuthorizationStatus,
+    AutonomousRunStatus,
     EvidenceType,
     FindingStatus,
     GraphEdgeType,
@@ -589,4 +593,76 @@ class AIContextMemory:
     memory_type: str
     content: str
     metadata: dict[str, object] = field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+# --- Autonomous Orchestration (M7.4) ----------------------------------------
+
+
+@dataclass(slots=True)
+class AutonomousRun:
+    """
+    A durable autonomous scan session (M7.4).
+
+    One AutonomousRun per project at a time; persists through crashes
+    and restarts. The state machine controls the entire lifecycle from
+    plan → approve → execute → observe → re-plan/completion.
+    """
+
+    id: UUID
+    project_id: UUID
+    initiated_by: UUID
+    status: AutonomousRunStatus = AutonomousRunStatus.CREATED
+    objective: str = ""
+    max_actions: int = 20
+    max_runtime_seconds: int = 1800
+    current_cycle: int = 0
+    actions_completed: int = 0
+    approval_policy: str = "policy_based"
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    error_message: str | None = None
+    result_summary: dict[str, object] = field(default_factory=dict)
+    created_at: datetime | None = None
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in AUTONOMOUS_TERMINAL_STATUSES
+
+    @property
+    def is_cancellable(self) -> bool:
+        return self.status not in AUTONOMOUS_TERMINAL_STATUSES
+
+    def can_transition_to(self, new_status: AutonomousRunStatus) -> bool:
+        return new_status in VALID_AUTONOMOUS_TRANSITIONS.get(self.status, frozenset())
+
+
+@dataclass(slots=True)
+class AutonomousRunAction:
+    """
+    A single action within an autonomous run — proposed by the AI,
+    reviewed by a human (or auto-approved per policy), then executed.
+
+    Tracks the full lifecycle: proposal → decision → execution → result.
+    """
+
+    id: UUID
+    run_id: UUID
+    project_id: UUID
+    cycle: int
+    action_type: str
+    plugin: str | None = None
+    title: str = ""
+    description: str = ""
+    justification: str = ""
+    plugin_config: dict[str, object] = field(default_factory=dict)
+    target_ids: list[UUID] = field(default_factory=list)
+    category: ActionCategory = ActionCategory.CATEGORY_0
+    status: str = "proposed"
+    approved_by: UUID | None = None
+    approved_at: datetime | None = None
+    rejection_reason: str | None = None
+    scan_id: UUID | None = None
+    result_summary: dict[str, object] = field(default_factory=dict)
     created_at: datetime | None = None

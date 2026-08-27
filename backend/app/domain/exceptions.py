@@ -408,3 +408,57 @@ class AIContextMemoryNotFoundError(DomainError):
     def __init__(self, memory_id: UUID) -> None:
         self.memory_id = memory_id
         super().__init__(f"AI context memory {memory_id} not found.")
+
+
+# --- Autonomous Orchestration (M7.4) ----------------------------------------
+
+
+class AutonomousRunNotFoundError(DomainError):
+    def __init__(self, run_id: UUID) -> None:
+        self.run_id = run_id
+        super().__init__(f"Autonomous run {run_id} not found.")
+
+
+class AutonomousRunNotCancellableError(DomainError):
+    def __init__(self, run_id: UUID, current_status: str) -> None:
+        self.run_id = run_id
+        self.current_status = current_status
+        super().__init__(
+            f"Autonomous run {run_id} cannot be cancelled from status "
+            f"'{current_status}'."
+        )
+
+
+class AutonomousRunInvalidTransitionError(DomainError):
+    def __init__(self, current_status: str, requested_status: str) -> None:
+        self.current_status = current_status
+        self.requested_status = requested_status
+        super().__init__(
+            f"Cannot transition autonomous run from '{current_status}' to "
+            f"'{requested_status}'."
+        )
+
+
+class AutonomousRunBudgetExceededError(DomainError):
+    def __init__(self, run_id: UUID, budget_type: str) -> None:
+        self.run_id = run_id
+        self.budget_type = budget_type
+        super().__init__(f"Autonomous run {run_id} exceeded {budget_type} budget.")
+
+
+class AutonomousRunActiveExistsError(DomainError):
+    def __init__(self, project_id: UUID) -> None:
+        self.project_id = project_id
+        super().__init__(
+            f"An active autonomous run already exists for project {project_id}."
+        )
+
+
+class AutonomousActionNotApprovableError(DomainError):
+    def __init__(self, action_id: UUID, status: str) -> None:
+        self.action_id = action_id
+        self.status = status
+        super().__init__(
+            f"Autonomous action {action_id} cannot be approved from status "
+            f"'{status}'; must be 'proposed'."
+        )
