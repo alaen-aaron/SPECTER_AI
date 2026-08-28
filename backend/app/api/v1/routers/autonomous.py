@@ -150,15 +150,19 @@ async def plan_complete(
 @router.post(
     "/autonomous-runs/{run_id}/cycle",
     response_model=AutonomousCycleResponse,
-    summary="Run one bounded planner→validator→execution cycle (M7.4 Phase 2)",
+    summary="Run one bounded planner→validator→execution cycle (M7.4 Phase 2/3)",
     description=(
         "The controlled loop driver. One call = at most one planning burst "
         "(capped by the run budget), decision classification, policy "
         "auto-approval and execution of category-2 actions, and a single "
-        "state-machine advance. Category-1 actions pause the run at "
-        "AWAITING_APPROVAL for a human decision; nothing is ever executed "
-        "sans category-2 policy approval or an explicit human approval. "
-        "Execution always flows through the existing "
+        "state-machine advance. An OBSERVING run is first run through the "
+        "Phase 3 observation gate: it re-plans only when genuinely new "
+        "persisted facts exist (tool results / assets / findings / services / "
+        "technologies / a scan reaching a terminal state), otherwise it "
+        "completes with stopped_because=no_progress. Category-1 actions pause "
+        "the run at AWAITING_APPROVAL for a human decision; nothing is ever "
+        "executed sans category-2 policy approval or an explicit human "
+        "approval. Execution always flows through the existing "
         "execute_approved() → ScanService.create() → Scope Guard → Celery "
         "→ M7.1 isolated executor."
     ),

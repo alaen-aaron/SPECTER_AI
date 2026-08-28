@@ -25,6 +25,7 @@ from tests.fakes import (
     FakeAuditLogRepository,
     FakeAutonomousRunActionRepository,
     FakeAutonomousRunRepository,
+    FakeObservationSource,
     FakePlannerService,
     FakeScanLauncher,
 )
@@ -72,6 +73,7 @@ def _make_run(
 def _make_rig(
     run: AutonomousRun | None = None,
     clock: _FixedClock | None = None,
+    observation: FakeObservationSource | None = None,
 ) -> tuple[
     AutonomousRun,
     AutonomousService,
@@ -101,6 +103,7 @@ def _make_rig(
         classification=ActionClassificationPolicy(
             auto_eligible_plugins=frozenset({"ping"})
         ),
+        observation=observation,
         cycle_max_actions=3,
         session_timeout_seconds=15.0,
         clock=clk,
@@ -300,14 +303,17 @@ async def test_h_budget_max_runtime_exhausted() -> None:
 
 
 # ---------------------------------------------------------------------------
-# I: OBSERVING with budget -> re-plan (OBSERVING -> PLANNING -> burst)
+# I: OBSERVING with budget + NEW observation -> re-plan (OBSERVING -> PLANNING -> burst)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_i_observing_replans_with_budget() -> None:
     run, svc, orch, planner, launcher, _, _ = _make_rig(
-        run=_make_run(status=AutonomousRunStatus.OBSERVING, started_at=NOW)
+        run=_make_run(status=AutonomousRunStatus.OBSERVING, started_at=NOW),
+        # M7.4 Phase 3: re-planning from OBSERVING is gated on the observation
+        # step surfacing genuinely new facts.
+        observation=FakeObservationSource(has_new=True),
     )
     run_obj = await svc.get(run.id)
     run_obj.current_cycle = 3
@@ -319,6 +325,28 @@ async def test_i_observing_replans_with_budget() -> None:
     assert outcome.run.current_cycle == 4
     assert outcome.run.actions_completed == 1
     assert len(launcher.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# I1: OBSERVING with NO new observation -> COMPLETED (no_progress)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i1_observing_no_new_info_completes_no_progress() -> None:
+    run, svc, orch, _, launcher, _, _ = _make_rig(
+        run=_make_run(status=AutonomousRunStatus.OBSERVING, started_at=NOW),
+        observation=FakeObservationSource(has_new=False),
+    )
+    run_obj = await svc.get(run.id)
+    run_obj.current_cycle = 2
+    await orch._run_repo.update(run_obj)
+
+    outcome = await orch.cycle(run.id)
+
+    assert outcome.run.status is AutonomousRunStatus.COMPLETED
+    assert outcome.stopped_because == "no_progress"
+    assert len(launcher.calls) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -349,14 +377,16 @@ async def test_j_duplicate_last_action_skipped() -> None:
 
 @pytest.mark.asyncio
 async def test_k_once_only_across_cycles() -> None:
-    run, _, orch, planner, launcher, _, _ = _make_rig()
+    run, _, orch, planner, launcher, _, _ = _make_rig(
+        observation=FakeObservationSource(has_new=True)
+    )
     planner.proposal_specs = [_ping_spec()]
 
     first = await orch.cycle(run.id)
     assert first.run.status is AutonomousRunStatus.OBSERVING
     assert len(launcher.calls) == 1
 
-    second = await orch.cycle(run.id)  # re-plan re-proposes the same ping
+    second = await orch.cycle(run.id)  # new observation -> re-plan re-proposes the same ping
 
     assert second.run.status is AutonomousRunStatus.COMPLETED
     assert len(launcher.calls) == 1  # never executed twice

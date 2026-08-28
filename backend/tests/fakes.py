@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from app.application.action_validator import ProposalValidation
+from app.application.autonomous_observation import ObservationOutcome
 from app.application.planner_service import PlanOutcome, ProposedAction
 from app.domain.entities import (
     Asset,
@@ -273,6 +274,53 @@ class FakeAuthorizationRecordRepository:
 
     async def add(self, record: AuthorizationRecord) -> None:
         self._records[record.id] = record
+
+
+class FakeObservationSource:
+    """Test double for the M7.4 Phase 3 observation gate (`ObservationSource`).
+
+    `has_new` decides whether the OBSERVING step re-plans or completes with
+    `no_progress`; `raise_error` simulates an ingestion failure (run stays
+    OBSERVING).
+    """
+
+    def __init__(self, has_new: bool = False) -> None:
+        self.has_new = has_new
+        self.raise_error: Exception | None = None
+        self.calls: list[AutonomousRun] = []
+        self.counts: dict[str, int] = {
+            "executed_actions": 0,
+            "terminal_scans": 0,
+            "tool_results": 0,
+            "assets": 0,
+            "services": 0,
+            "technologies": 0,
+            "findings": 0,
+            "new_facts": 1 if has_new else 0,
+        }
+
+    async def ingest(
+        self, run: AutonomousRun
+    ) -> ObservationOutcome:
+        self.calls.append(run)
+        if self.raise_error is not None:
+            raise self.raise_error
+        index = len(self.calls)
+        signature = f"fake-signature-{index}"
+        summary: dict[str, object] = {
+            "observation_signature": signature,
+            "observations_total": index,
+            "last_observation_at": datetime.now(UTC).isoformat(),
+            "observation_counts": dict(self.counts),
+            "provenance": [],
+        }
+        return ObservationOutcome(
+            has_new=self.has_new,
+            signature=signature,
+            facts=(),
+            counts=dict(self.counts),
+            summary=summary,
+        )
 
 
 class FakeAuditLogRepository:
@@ -1220,6 +1268,7 @@ class FakePlannerService:
         self.outcome: PlanOutcome | None = None
         self.stopped_because: str = "no_more_candidates"
         self.raise_validation_rejection = False
+        self.plan_raises: Exception | None = None
         self.plan_calls: list[dict[str, object]] = []
         self.planned: list[PlannedAction] = []
         self.approved: list[UUID] = []
@@ -1254,6 +1303,8 @@ class FakePlannerService:
                 context_summary={},
                 runner_mode="subprocess",
             )
+        if self.plan_raises is not None:
+            raise self.plan_raises
         if self.outcome is not None:
             return self.outcome
 

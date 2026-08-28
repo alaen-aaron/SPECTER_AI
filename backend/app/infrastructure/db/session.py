@@ -27,6 +27,9 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import Settings, get_settings
+from app.infrastructure.celery_app.dispatch_after_commit import (
+    drain_pending_dispatches,
+)
 
 
 class Base(DeclarativeBase):
@@ -91,6 +94,10 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+            # M7.4 Phase 3 (§18 dispatch race): only after the transaction is
+            # durably committed do we hand queued scans to Celery. A scan id
+            # buffered during this request but rolled back is never delivered.
+            drain_pending_dispatches()
         except Exception:
             await session.rollback()
             raise

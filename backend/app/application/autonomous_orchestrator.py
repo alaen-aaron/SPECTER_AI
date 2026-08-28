@@ -20,18 +20,42 @@ Everything here is bounded and audited:
    the run's initiator. A human's click is recorded as
    `approval_mode = MANUAL`. The audit trail never fabricates an
    approval of either kind.
+
+M7.4 Phase 3 (feedback, observation & controlled re-planning):
+
+5. OBSERVING is the feedback gate. A cycle on an OBSERVING run ingests
+   persisted project state through the injected `ObservationSource`,
+   computes a deterministic novelty signature, and only re-plans when
+   genuinely NEW facts exist (tool results, assets, findings, services,
+   technologies, or a scan reaching a terminal state). No new facts ->
+   the run completes with `stopped_because="no_progress"` instead of
+   looping fruitlessly.
+6. Every loop iteration is a re-entry through the SAME gates: re-plan
+   proposals are re-validated, re-classified, and re-gated by the
+   approval policy before any scan is created. A failed observation
+   (repo error) leaves the run in OBSERVING for an operator retry; a
+   planner failure leaves it in PLANNING; a Scope-Guard rejection at
+   execution time marks the action failed and is audited
+   (`ai.autonomous.scope_rejected`) — never executed.
+7. Deduplication is fingerprint-based (action type + plugin + targets +
+   config vs. every already-executed action), not planner wording, so a
+   ping/nmap ping-pong can never burn the budget.
+8. No two cycles may run concurrently for the same run; the second caller
+   raises `AutonomousCycleNotAllowedError(run_id, "concurrent_cycle")`.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID, uuid4
 
 from app.application.action_classifier import ActionClassificationPolicy
+from app.application.autonomous_observation import ObservationOutcome
 from app.application.autonomous_service import AutonomousService
 from app.application.planner_service import PlannerService, ScanLauncher
 from app.domain.entities import AuditLogEntry, AutonomousRun, PlannedAction
@@ -39,10 +63,16 @@ from app.domain.exceptions import (
     ActionNotExecutableError,
     ActionRejectedByValidatorError,
     AutonomousCycleNotAllowedError,
+    NoActiveAuthorizationError,
+    OutOfScopeTargetError,
     PlannedActionNotFoundError,
+    ProjectNotActiveError,
+    TargetNotFoundError,
 )
 from app.domain.repositories import AuditLogRepository, AutonomousRunRepository
 from app.domain.value_objects import ActionCategory, AutonomousRunStatus
+
+log = logging.getLogger(__name__)
 
 
 class _Clock(Protocol):
@@ -52,6 +82,12 @@ class _Clock(Protocol):
 class _SystemClock:
     def utcnow(self) -> datetime:
         return datetime.now(UTC)
+
+
+class ObservationSource(Protocol):
+    """Boundary to the observation ingestion (M7.4 Phase 3, OBSERVE step)."""
+
+    async def ingest(self, run: AutonomousRun) -> ObservationOutcome: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +112,7 @@ class AutonomousOrchestrator:
         run_repository: AutonomousRunRepository,
         classification: ActionClassificationPolicy | None = None,
         audit_repository: AuditLogRepository | None = None,
+        observation: ObservationSource | None = None,
         cycle_max_actions: int = 3,
         session_timeout_seconds: float = 15.0,
         clock: _Clock | None = None,
@@ -86,15 +123,29 @@ class AutonomousOrchestrator:
         self._run_repo = run_repository
         self._classification = classification or ActionClassificationPolicy()
         self._audit = audit_repository
+        self._observation = observation
         self._cycle_max_actions = max(1, cycle_max_actions)
         self._session_timeout_seconds = session_timeout_seconds
         self._clock = clock or _SystemClock()
+        # Process-local concurrency guard (M7.4 Phase 3, §25): a second cycle()
+        # for the same run raises instead of double-dispatching scans.
+        self._in_flight: set[UUID] = set()
 
     async def cycle(self, run_id: UUID) -> CycleOutcome:
         """Advance the run exactly one bounded step (see module docstring)."""
         run = await self._svc.get(run_id)
         if run.is_terminal:
             raise AutonomousCycleNotAllowedError(run_id, run.status.value)
+        if run_id in self._in_flight:
+            raise AutonomousCycleNotAllowedError(run_id, "concurrent_cycle")
+        self._in_flight.add(run_id)
+        try:
+            return await self._cycle_unlocked(run_id)
+        finally:
+            self._in_flight.discard(run_id)
+
+    async def _cycle_unlocked(self, run_id: UUID) -> CycleOutcome:
+        run = await self._svc.get(run_id)
 
         if run.status is AutonomousRunStatus.AWAITING_APPROVAL:
             # Nothing to do until a human decides on the proposed actions.
@@ -107,13 +158,12 @@ class AutonomousOrchestrator:
             run = await self._svc.get(run_id)
 
         if run.status is AutonomousRunStatus.OBSERVING:
-            # Advance the loop: re-plan while the budget still allows it.
-            if self._budget_ok(run):
-                run = await self._svc.observation_complete(run_id, should_continue=True)
-                run = await self._svc.get(run_id)
-            else:
+            # Phase 3 feedback gate: re-plan only when the observation step
+            # surfaced genuinely new facts; otherwise complete (no_progress).
+            if not self._budget_ok(run):
                 run = await self._svc.observation_complete(run_id, should_continue=False)
                 return self._outcome(run, stopped="budget_exhausted")
+            return await self._observe_and_decide(run_id, run)
 
         if run.status is AutonomousRunStatus.EXECUTING:
             # Human-approved (MANUAL) pending actions are executed here.
@@ -145,14 +195,29 @@ class AutonomousOrchestrator:
             return self._finished(run, summary, "budget_exhausted")
 
         remaining = run.max_actions - run.actions_completed
-        plan_outcome = await self._planner.plan(
-            project_id=run.project_id,
-            created_by=run.initiated_by,
-            objective=run.objective,
-            max_actions=min(self._cycle_max_actions, remaining),
-            session_timeout_seconds=self._session_timeout_seconds,
-            cancelled_check=self._cancelled_check(run),
-        )
+        try:
+            plan_outcome = await self._planner.plan(
+                project_id=run.project_id,
+                created_by=run.initiated_by,
+                objective=run.objective,
+                max_actions=min(self._cycle_max_actions, remaining),
+                session_timeout_seconds=self._session_timeout_seconds,
+                cancelled_check=self._cancelled_check(run),
+            )
+        except Exception as exc:  # noqa: BLE001 - planner failure must not 500 the loop
+            log.exception("autonomous_planner_error run_id=%s", str(run.id))
+            await self._audit_event(
+                run,
+                "ai.autonomous.planner_error",
+                {"error": type(exc).__name__},
+            )
+            # Non-destructive: the run stays PLANNING so an operator-driven
+            # retry of cycle() re-enters the planning burst cleanly.
+            return self._outcome(
+                run,
+                stopped="planner_error",
+                extra={"error": type(exc).__name__},
+            )
 
         if plan_outcome.stopped_because == "cancelled":
             return self._outcome(run, stopped="cancelled", extra=summary)
@@ -201,7 +266,7 @@ class AutonomousOrchestrator:
 
             await self._svc.attach_planned_action(record.id, action.id)
 
-            if await self._is_immediate_repeat(run.id, action):
+            if await self._is_repeat(run.id, action):
                 await self._svc.mark_action_duplicate(record.id)
                 summary["duplicates"] += 1
                 await self._audit_decision(
@@ -248,6 +313,26 @@ class AutonomousOrchestrator:
                         run,
                         record.id,
                         "ai.autonomous.execute_failed",
+                        {"error": type(exc).__name__},
+                    )
+                    continue
+                except (
+                    OutOfScopeTargetError,
+                    NoActiveAuthorizationError,
+                    ProjectNotActiveError,
+                    TargetNotFoundError,
+                ) as exc:
+                    # Scope Guard re-validated at execution time and refused:
+                    # the action is recorded failed, NEVER executed, and the
+                    # rejection is audited. (Plan-time validation already
+                    # blocks this path; this is the belt-and-suspenders catch.)
+                    await self._svc.mark_action_failed(
+                        record.id, reason=type(exc).__name__
+                    )
+                    await self._audit_decision(
+                        run,
+                        record.id,
+                        "ai.autonomous.scope_rejected",
                         {"error": type(exc).__name__},
                     )
                     continue
@@ -336,6 +421,22 @@ class AutonomousOrchestrator:
                     {"error": type(exc).__name__},
                 )
                 continue
+            except (
+                OutOfScopeTargetError,
+                NoActiveAuthorizationError,
+                ProjectNotActiveError,
+                TargetNotFoundError,
+            ) as exc:
+                await self._svc.mark_action_failed(
+                    record.id, reason=type(exc).__name__
+                )
+                await self._audit_decision(
+                    run,
+                    record.id,
+                    "ai.autonomous.scope_rejected",
+                    {"error": type(exc).__name__},
+                )
+                continue
 
             await self._svc.record_action_execution(record.id, scan.id)
             executed_scan_ids.append(scan.id)
@@ -356,6 +457,70 @@ class AutonomousOrchestrator:
         return self._outcome(
             run, stopped="executed", executed=executed_scan_ids, extra=summary
         )
+
+    # ── Observation step (M7.4 Phase 3) ────────────────────────────────────
+
+    async def _observe_and_decide(self, run_id: UUID, run: AutonomousRun) -> CycleOutcome:
+        """OBSERVE + UNDERSTAND: ingest state, gate re-planning on novelty.
+
+        - No observation source wired (unit-test seam) -> nothing new is
+          knowable -> complete with `no_progress`.
+        - Ingestion failure -> run stays OBSERVING (operator retry), audited.
+        - No new facts -> OBSERVING -> COMPLETED (`no_progress`).
+        - New facts -> OBSERVING -> PLANNING -> one bounded planning burst.
+        """
+        if self._observation is None:
+            run = await self._svc.observation_complete(run_id, should_continue=False)
+            return self._outcome(
+                run, stopped="no_progress", extra={"observations_ingested": 0}
+            )
+
+        try:
+            outcome = await self._observation.ingest(run)
+        except Exception as exc:  # noqa: BLE001 - a repo failure must not 500 the loop
+            log.exception("autonomous_observation_error run_id=%s", str(run.id))
+            await self._audit_event(
+                run,
+                "ai.autonomous.observation_error",
+                {"error": type(exc).__name__},
+            )
+            return self._outcome(
+                run,
+                stopped="observation_error",
+                extra={"error": type(exc).__name__},
+            )
+
+        # Persist the observability snapshot onto the run (durable across
+        # requests; the signature drives future novelty checks).
+        run = await self._svc.get(run_id)
+        run.result_summary.update(outcome.summary)
+        await self._run_repo.update(run)
+        run = await self._svc.get(run_id)
+
+        if run.status is AutonomousRunStatus.CANCELLED:
+            return self._outcome(run, stopped="cancelled", extra=outcome.counts)
+
+        await self._audit_event(
+            run,
+            "ai.autonomous.observation",
+            {
+                "has_new": outcome.has_new,
+                **outcome.counts,
+                "provenance_count": len(outcome.facts),
+            },
+        )
+
+        if not outcome.has_new:
+            run = await self._svc.observation_complete(run_id, should_continue=False)
+            return self._outcome(
+                run,
+                stopped="no_progress",
+                extra={**outcome.counts, "observations_ingested": 1},
+            )
+
+        run = await self._svc.observation_complete(run_id, should_continue=True)
+        run = await self._svc.get(run_id)
+        return await self._plan_and_decide(run)
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -389,25 +554,26 @@ class AutonomousOrchestrator:
             ]
         )
 
-    async def _is_immediate_repeat(self, run_id: UUID, action: PlannedAction) -> bool:
+    async def _is_repeat(self, run_id: UUID, action: PlannedAction) -> bool:
+        """Fingerprint-based repeat check against EVERY already-executed action.
+
+        Matches on (action_type, plugin, targets, config) — never planner
+        wording — so identical work cannot be re-executed even across cycles
+        (prevents a ping/nmap ping-pong from burning the run budget).
+        """
         actions = await self._svc.list_actions(run_id)
-        executed = [
-            a for a in actions
-            if a.status == "executed"
-        ]
-        if not executed:
-            return False
-        last = max(
-            executed,
-            key=lambda a: (a.cycle, a.created_at or datetime.min.replace(tzinfo=UTC)),
-        )
-        return (
-            last.action_type == action.action_type
-            and last.plugin == action.plugin
-            and sorted(str(t) for t in last.target_ids)
-            == sorted(str(t) for t in action.target_ids)
-            and dict(last.plugin_config) == dict(action.plugin_config)
-        )
+        for a in actions:
+            if a.status != "executed":
+                continue
+            if (
+                a.action_type == action.action_type
+                and a.plugin == action.plugin
+                and sorted(str(t) for t in a.target_ids)
+                == sorted(str(t) for t in action.target_ids)
+                and dict(a.plugin_config) == dict(action.plugin_config)
+            ):
+                return True
+        return False
 
     async def _store_summary(self, run_id: UUID) -> None:
         run = await self._svc.get(run_id)
@@ -433,7 +599,7 @@ class AutonomousOrchestrator:
         self,
         run: AutonomousRun,
         *,
-        extra: dict[str, int] | None = None,
+        extra: Mapping[str, object] | None = None,
         stopped_because: str = "",
     ) -> dict[str, object]:
         summary: dict[str, object] = dict(extra) if extra else {}
@@ -447,7 +613,7 @@ class AutonomousOrchestrator:
         run: AutonomousRun,
         *,
         executed: list[UUID] | None = None,
-        extra: dict[str, int] | None = None,
+        extra: Mapping[str, object] | None = None,
         stopped: str = "",
     ) -> CycleOutcome:
         return CycleOutcome(
@@ -460,10 +626,35 @@ class AutonomousOrchestrator:
     def _finished(
         self,
         run: AutonomousRun,
-        summary: dict[str, int],
+        summary: Mapping[str, object],
         stopped: str,
     ) -> CycleOutcome:
         return self._outcome(run, extra=summary, stopped=stopped)
+
+    async def _audit_event(
+        self,
+        run: AutonomousRun,
+        action: str,
+        details: dict[str, object],
+    ) -> None:
+        """Run-level audit entry (observation/error events, no action row)."""
+        if self._audit is None:
+            return
+        entry = AuditLogEntry(
+            id=uuid4(),
+            organization_id=None,
+            actor_id=run.initiated_by,
+            action=action,
+            target_type="autonomous_run",
+            target_id=run.id,
+            ip_address=None,
+            created_at=self._clock.utcnow(),
+            after_state={"run_id": str(run.id), **details},
+        )
+        try:
+            await self._audit.add(entry)
+        except Exception:
+            return
 
     async def _audit_decision(
         self,

@@ -24,8 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.action_classifier import ActionClassificationPolicy
 from app.application.action_validator import ActionProposalValidator
-from app.application.autonomous_orchestrator import AutonomousOrchestrator
-from app.application.autonomous_service import AutonomousService
 
 # AI Decision Engine services (Phase 4)
 from app.application.ai_reporter_service import AIReporterService
@@ -40,6 +38,9 @@ from app.application.auth_service import (
     RegisterUserService,
 )
 from app.application.authorization_service import AuthorizationRecordService
+from app.application.autonomous_observation import ObservationIngestService
+from app.application.autonomous_orchestrator import AutonomousOrchestrator
+from app.application.autonomous_service import AutonomousService
 from app.application.context_memory_service import ContextMemoryService
 from app.application.evidence_service import EvidenceService
 from app.application.executive_intelligence_service import ExecutiveIntelligenceService
@@ -69,6 +70,7 @@ from app.domain.value_objects import (
     ProjectRole,
 )
 from app.infrastructure.celery_app.dispatcher import (
+    AfterCommitScanTaskDispatcher,
     CeleryScanTaskDispatcher,
     CeleryWorkflowTaskDispatcher,
 )
@@ -76,18 +78,15 @@ from app.infrastructure.db.repositories.ai_context_memory_repository import (
     SqlAlchemyAIContextMemoryRepository,
 )
 from app.infrastructure.db.repositories.asset_repository import SqlAlchemyAssetRepository
-from app.infrastructure.db.repositories.asset_observation_repository import (
-    SqlAlchemyAssetObservationRepository,
+from app.infrastructure.db.repositories.audit_log_repository import SqlAlchemyAuditLogRepository
+from app.infrastructure.db.repositories.authorization_repository import (
+    SqlAlchemyAuthorizationRecordRepository,
 )
 from app.infrastructure.db.repositories.autonomous_run_action_repository import (
     SqlAlchemyAutonomousRunActionRepository,
 )
 from app.infrastructure.db.repositories.autonomous_run_repository import (
     SqlAlchemyAutonomousRunRepository,
-)
-from app.infrastructure.db.repositories.audit_log_repository import SqlAlchemyAuditLogRepository
-from app.infrastructure.db.repositories.authorization_repository import (
-    SqlAlchemyAuthorizationRecordRepository,
 )
 from app.infrastructure.db.repositories.evidence_repository import (
     SqlAlchemyEvidenceRepository,
@@ -117,6 +116,9 @@ from app.infrastructure.db.repositories.report_repository import (
 from app.infrastructure.db.repositories.risk_score_repository import SqlAlchemyRiskScoreRepository
 from app.infrastructure.db.repositories.scan_repository import SqlAlchemyScanRepository
 from app.infrastructure.db.repositories.target_repository import SqlAlchemyTargetRepository
+from app.infrastructure.db.repositories.tool_result_repository import (
+    SqlAlchemyToolResultRepository,
+)
 from app.infrastructure.db.repositories.workflow_repository import (
     SqlAlchemyScheduleRepository,
     SqlAlchemyWorkflowExecutionRepository,
@@ -184,6 +186,12 @@ def get_scan_repository(
     session: AsyncSession = Depends(get_db_session),
 ) -> SqlAlchemyScanRepository:
     return SqlAlchemyScanRepository(session)
+
+
+def get_tool_result_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyToolResultRepository:
+    return SqlAlchemyToolResultRepository(session)
 
 
 def get_asset_repository(
@@ -351,7 +359,9 @@ def get_plugin_registry() -> PluginRegistry:
 
 
 def get_scan_task_dispatcher() -> ScanTaskDispatcher:
-    return CeleryScanTaskDispatcher()
+    # M7.4 Phase 3 (§18): buffer dispatch until get_db_session commits the
+    # request transaction, so the worker can never miss a not-yet-committed scan.
+    return AfterCommitScanTaskDispatcher(inner=CeleryScanTaskDispatcher())
 
 
 def get_scan_service(
@@ -1070,7 +1080,23 @@ def get_autonomous_orchestrator(
     run_repo: SqlAlchemyAutonomousRunRepository = Depends(get_autonomous_run_repository),
     audit_repo: SqlAlchemyAuditLogRepository = Depends(get_audit_log_repository),
     classification: ActionClassificationPolicy = Depends(get_action_classification_policy),
+    action_repo: SqlAlchemyAutonomousRunActionRepository = Depends(
+        get_autonomous_action_repository
+    ),
+    scan_repo: SqlAlchemyScanRepository = Depends(get_scan_repository),
+    tool_result_repo: SqlAlchemyToolResultRepository = Depends(get_tool_result_repository),
+    asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
+    finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
+    target_repo: SqlAlchemyTargetRepository = Depends(get_target_repository),
 ) -> AutonomousOrchestrator:
+    observation = ObservationIngestService(
+        action_repository=action_repo,
+        scan_repository=scan_repo,
+        tool_result_repository=tool_result_repo,
+        asset_repository=asset_repo,
+        finding_repository=finding_repo,
+        target_repository=target_repo,
+    )
     return AutonomousOrchestrator(
         autonomous_service=autonomous_service,
         planner=planner,
@@ -1078,4 +1104,5 @@ def get_autonomous_orchestrator(
         run_repository=run_repo,
         classification=classification,
         audit_repository=audit_repo,
+        observation=observation,
     )
