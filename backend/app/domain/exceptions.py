@@ -462,3 +462,26 @@ class AutonomousActionNotApprovableError(DomainError):
             f"Autonomous action {action_id} cannot be approved from status "
             f"'{status}'; must be 'proposed'."
         )
+
+
+class AutonomousCycleNotAllowedError(DomainError):
+    """A bounded cycle cannot run from the run's current status (M7.4 Phase 2)."""
+
+    def __init__(self, run_id: UUID, current_status: str) -> None:
+        self.run_id = run_id
+        self.current_status = current_status
+        super().__init__(
+            f"Autonomous cycle cannot run for run {run_id} from status "
+            f"'{current_status}'."
+        )
+
+
+class AutonomousActionExecutionError(DomainError):
+    """An autonomous action could not be executed as a scan (M7.4 Phase 2)."""
+
+    def __init__(self, run_id: UUID, action_id: UUID, message: str) -> None:
+        self.run_id = run_id
+        self.action_id = action_id
+        super().__init__(
+            f"Autonomous action {action_id} (run {run_id}) failed: {message}"
+        )

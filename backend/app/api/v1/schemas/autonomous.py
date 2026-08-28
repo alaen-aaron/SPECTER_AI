@@ -63,10 +63,21 @@ class AutonomousRunActionResponse(BaseModel):
     status: str
     approved_by: UUID | None
     approved_at: datetime | None
+    approval_mode: str | None
+    planned_action_id: UUID | None
     rejection_reason: str | None
     scan_id: UUID | None
     result_summary: dict[str, Any]
     created_at: datetime | None
+
+
+class AutonomousCycleResponse(BaseModel):
+    """Result of one bounded planner→validator→execution cycle (M7.4 Phase 2)."""
+
+    run: AutonomousRunResponse
+    summary: dict[str, Any]
+    executed_scan_ids: list[UUID]
+    stopped_because: str
 
 
 class ApproveActionRequest(BaseModel):

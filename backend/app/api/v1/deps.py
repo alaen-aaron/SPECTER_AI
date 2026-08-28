@@ -22,7 +22,9 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.action_classifier import ActionClassificationPolicy
 from app.application.action_validator import ActionProposalValidator
+from app.application.autonomous_orchestrator import AutonomousOrchestrator
 from app.application.autonomous_service import AutonomousService
 
 # AI Decision Engine services (Phase 4)
@@ -1055,3 +1057,25 @@ def get_autonomous_service(
     ),
 ) -> AutonomousService:
     return AutonomousService(run_repo=run_repo, action_repo=action_repo)
+
+
+def get_action_classification_policy() -> ActionClassificationPolicy:
+    return ActionClassificationPolicy()
+
+
+def get_autonomous_orchestrator(
+    autonomous_service: AutonomousService = Depends(get_autonomous_service),
+    planner: PlannerService = Depends(get_planner_service),
+    scan_service: ScanService = Depends(get_scan_service),
+    run_repo: SqlAlchemyAutonomousRunRepository = Depends(get_autonomous_run_repository),
+    audit_repo: SqlAlchemyAuditLogRepository = Depends(get_audit_log_repository),
+    classification: ActionClassificationPolicy = Depends(get_action_classification_policy),
+) -> AutonomousOrchestrator:
+    return AutonomousOrchestrator(
+        autonomous_service=autonomous_service,
+        planner=planner,
+        launcher=scan_service.create,
+        run_repository=run_repo,
+        classification=classification,
+        audit_repository=audit_repo,
+    )

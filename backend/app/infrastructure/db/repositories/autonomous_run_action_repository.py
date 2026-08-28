@@ -29,6 +29,8 @@ def _to_entity(row: AutonomousRunActionModel) -> AutonomousRunAction:
         status=row.status,
         approved_by=row.approved_by,
         approved_at=row.approved_at,
+        approval_mode=row.approval_mode,
+        planned_action_id=row.planned_action_id,
         rejection_reason=row.rejection_reason,
         scan_id=row.scan_id,
         result_summary=row.result_summary or {},
@@ -57,6 +59,8 @@ class SqlAlchemyAutonomousRunActionRepository:
             status=action.status,
             approved_by=action.approved_by,
             approved_at=action.approved_at,
+            approval_mode=action.approval_mode,
+            planned_action_id=action.planned_action_id,
             rejection_reason=action.rejection_reason,
             scan_id=action.scan_id,
             result_summary=action.result_summary,
@@ -89,6 +93,8 @@ class SqlAlchemyAutonomousRunActionRepository:
         row.status = action.status
         row.approved_by = action.approved_by
         row.approved_at = action.approved_at
+        row.approval_mode = action.approval_mode
+        row.planned_action_id = action.planned_action_id
         row.rejection_reason = action.rejection_reason
         row.scan_id = action.scan_id
         row.result_summary = action.result_summary

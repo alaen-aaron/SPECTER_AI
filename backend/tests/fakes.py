@@ -18,8 +18,10 @@ reachable).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from app.application.action_validator import ProposalValidation
+from app.application.planner_service import PlanOutcome, ProposedAction
 from app.domain.entities import (
     Asset,
     AssetObservation,
@@ -34,6 +36,7 @@ from app.domain.entities import (
     Organization,
     OrganizationInvitation,
     OrganizationMember,
+    PlannedAction,
     Project,
     ProjectMember,
     Report,
@@ -48,6 +51,11 @@ from app.domain.entities import (
     WorkflowExecution,
     WorkflowStep,
 )
+from app.domain.exceptions import (
+    ActionNotExecutableError,
+    ActionRejectedByValidatorError,
+    PlannedActionNotFoundError,
+)
 from app.domain.value_objects import (
     AssetType,
     AuthorizationStatus,
@@ -56,6 +64,7 @@ from app.domain.value_objects import (
     GraphEdgeType,
     GraphNodeType,
     OrganizationRole,
+    PlannedActionStatus,
     ProjectRole,
     ReportStatus,
     ScanStatus,
@@ -1155,3 +1164,202 @@ class FakeAutonomousRunActionRepository:
             key=lambda a: (a.cycle, a.created_at or datetime.min.replace(tzinfo=UTC)),
         )
         return f"{last.action_type}:{last.plugin}:{last.target_ids}:{last.status}"
+
+
+class FakeScanLauncher:
+    """Stands in for `ScanService.create` — records calls, returns a QUEUED Scan."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.scans: dict[UUID, Scan] = {}
+        self.fail: Exception | None = None
+
+    async def __call__(
+        self,
+        project_id: UUID,
+        plugin_name: str,
+        plugin_config: dict[str, object],
+        target_ids: list[UUID],
+        initiated_by: UUID,
+    ) -> Scan:
+        if self.fail is not None:
+            raise self.fail
+        scan = Scan(
+            id=uuid4(),
+            project_id=project_id,
+            initiated_by=initiated_by,
+            plugin=plugin_name,
+            status=ScanStatus.QUEUED,
+            target_ids=list(target_ids),
+            plugin_config=dict(plugin_config),
+            created_at=datetime.now(UTC),
+        )
+        self.calls.append(
+            {
+                "project_id": project_id,
+                "plugin_name": plugin_name,
+                "plugin_config": dict(plugin_config),
+                "target_ids": list(target_ids),
+                "initiated_by": initiated_by,
+            }
+        )
+        self.scans[scan.id] = scan
+        return scan
+
+
+class FakePlannerService:
+    """Deterministic test double for `PlannerService.plan/approve/reject/execute_approved`.
+
+    `proposal_specs` drives `plan()`: each spec is a dict with the shape
+    of a grounded proposal plus `accepted` / `risk_level`. `outcome` lets
+    a test bypass proposal-building entirely (e.g. planner exhausted).
+    """
+
+    def __init__(self) -> None:
+        self.proposal_specs: list[dict[str, object]] = []
+        self.outcome: PlanOutcome | None = None
+        self.stopped_because: str = "no_more_candidates"
+        self.raise_validation_rejection = False
+        self.plan_calls: list[dict[str, object]] = []
+        self.planned: list[PlannedAction] = []
+        self.approved: list[UUID] = []
+        self.rejected: list[UUID] = []
+        self.executed: list[tuple[UUID, Scan]] = []
+        self._store: dict[UUID, PlannedAction] = {}
+
+    async def plan(
+        self,
+        project_id: UUID,
+        created_by: UUID,
+        objective: str = "",
+        max_actions: int = 3,
+        session_timeout_seconds: float = 15.0,
+        cancelled_check=None,
+    ) -> PlanOutcome:
+        self.plan_calls.append(
+            {
+                "project_id": project_id,
+                "created_by": created_by,
+                "objective": objective,
+                "max_actions": max_actions,
+                "session_timeout_seconds": session_timeout_seconds,
+            }
+        )
+        if cancelled_check is not None and cancelled_check():
+            return PlanOutcome(
+                proposals=(),
+                skipped_duplicates=0,
+                ungrounded=0,
+                stopped_because="cancelled",
+                context_summary={},
+                runner_mode="subprocess",
+            )
+        if self.outcome is not None:
+            return self.outcome
+
+        proposals: list[ProposedAction] = []
+        for spec in self.proposal_specs[:max_actions]:
+            action = PlannedAction(
+                id=uuid4(),
+                project_id=project_id,
+                action_type=str(spec.get("action_type", "recon")),
+                title=str(spec.get("title", "")),
+                description=str(spec.get("description", "")),
+                justification=str(spec.get("justification", "")),
+                plugin=str(spec.get("plugin", "ping")),
+                target_ids=[UUID(str(t)) for t in spec.get("target_ids", [])],
+                plugin_config=dict(spec.get("plugin_config") or {}),
+                status=PlannedActionStatus.PENDING_REVIEW,
+                created_by=created_by,
+                objective=objective or None,
+                risk_level=str(spec.get("risk_level", "low")),
+            )
+            self._store[action.id] = action
+            self.planned.append(action)
+            accepted = bool(spec.get("accepted", True))
+            proposals.append(
+                ProposedAction(
+                    action=action,
+                    validation=ProposalValidation(
+                        accepted=accepted, checks=(), runner_mode="subprocess"
+                    ),
+                    persisted=accepted,
+                )
+            )
+        return PlanOutcome(
+            proposals=tuple(proposals),
+            skipped_duplicates=0,
+            ungrounded=0,
+            stopped_because=self.stopped_because,
+            context_summary={},
+            runner_mode="subprocess",
+        )
+
+    async def approve(self, action_id: UUID, approved_by: UUID) -> PlannedAction:
+        action = self._get(action_id)
+        if not action.is_approvable:
+            from app.domain.exceptions import PlannedActionNotApprovableError
+
+            raise PlannedActionNotApprovableError(action_id, action.status.value)
+        action.status = PlannedActionStatus.APPROVED
+        action.approved_by = approved_by
+        action.approved_at = datetime.now(UTC)
+        self.approved.append(action_id)
+        return action
+
+    async def reject(self, action_id: UUID, rejected_by: UUID, reason: str = "") -> PlannedAction:
+        action = self._get(action_id)
+        action.status = PlannedActionStatus.REJECTED
+        action.rejection_reason = reason
+        self.rejected.append(action_id)
+        return action
+
+    async def get(self, action_id: UUID) -> PlannedAction:
+        return self._get(action_id)
+
+    async def list_for_project(
+        self,
+        project_id: UUID,
+        status: PlannedActionStatus | None = None,
+        limit: int = 20,
+    ) -> list[PlannedAction]:
+        return [
+            a
+            for a in self.planned
+            if a.project_id == project_id
+            and (status is None or a.status == status)
+        ][:limit]
+
+    async def execute_approved(
+        self,
+        action_id: UUID,
+        initiated_by: UUID,
+        launch_scan,
+        expected_project_id: UUID | None = None,
+    ) -> tuple[PlannedAction, Scan]:
+        action = self._get(action_id)
+        if expected_project_id is not None and action.project_id != expected_project_id:
+            raise PlannedActionNotFoundError(action_id)
+        if action.status is not PlannedActionStatus.APPROVED:
+            raise ActionNotExecutableError(action_id, action.status.value)
+        if self.raise_validation_rejection:
+            raise ActionRejectedByValidatorError(
+                action_id, ["fake execution-time re-validation rejection"]
+            )
+        scan = await launch_scan(
+            project_id=action.project_id,
+            plugin_name=str(action.plugin),
+            plugin_config=dict(action.plugin_config),
+            target_ids=list(action.target_ids),
+            initiated_by=initiated_by,
+        )
+        action.status = PlannedActionStatus.EXECUTED
+        action.scan_id = scan.id
+        self.executed.append((action_id, scan))
+        return action, scan
+
+    def _get(self, action_id: UUID) -> PlannedAction:
+        action = self._store.get(action_id)
+        if action is None:
+            raise PlannedActionNotFoundError(action_id)
+        return action

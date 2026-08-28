@@ -144,6 +144,33 @@ class AutonomousService:
         await self._transition(run, AutonomousRunStatus.EXECUTING)
         return run
 
+    async def begin_execution(self, run_id: UUID) -> AutonomousRun:
+        """PLANNING → EXECUTING.
+
+        M7.4 Phase 2 additive: a bounded cycle whose decisions were all
+        auto-approved by policy advances PLANNING → EXECUTING without a
+        manual approval hop (approval_mode=AUTO_POLICY on each action).
+        """
+        run = await self.get(run_id)
+        if run.status != AutonomousRunStatus.PLANNING:
+            raise AutonomousRunInvalidTransitionError(run.status.value, "executing")
+        await self._transition(run, AutonomousRunStatus.EXECUTING)
+        return run
+
+    async def complete(self, run_id: UUID) -> AutonomousRun:
+        """PLANNING → COMPLETED.
+
+        M7.4 Phase 2 additive: the planner produced nothing executable
+        (or the budget is spent with nothing left to do) so the bounded
+        cycle ends directly instead of fabricating executing/observing.
+        """
+        run = await self.get(run_id)
+        if run.status != AutonomousRunStatus.PLANNING:
+            raise AutonomousRunInvalidTransitionError(run.status.value, "completed")
+        run.completed_at = self._clock.utcnow()
+        await self._transition(run, AutonomousRunStatus.COMPLETED)
+        return run
+
     async def execution_complete(self, run_id: UUID) -> AutonomousRun:
         """EXECUTING → OBSERVING."""
         run = await self.get(run_id)
@@ -227,13 +254,15 @@ class AutonomousService:
     async def approve_action(
         self, action_id: UUID, approved_by: UUID
     ) -> AutonomousRunAction:
-        """Approve a proposed action."""
+        """Approve a proposed action (an explicit, manual human decision)."""
         action = await self._get_action(action_id)
         if action.status != "proposed":
             raise AutonomousActionNotApprovableError(action_id, action.status)
         action.status = "approved"
         action.approved_by = approved_by
         action.approved_at = self._clock.utcnow()
+        # A human clicked approve -> this is NOT a policy-granted approval.
+        action.approval_mode = "manual"
         await self._action_repo.update(action)
         return action
 
@@ -264,6 +293,69 @@ class AutonomousService:
         run = await self.get(action.run_id)
         run.actions_completed += 1
         await self._run_repo.update(run)
+        return action
+
+    # ── Phase 2 additive lifecycle granularity ─────────────────────────────
+    # Narrow, intent-revealing transitions used by the bounded cycle. Each
+    # mirrors Phase 1's approve/reject granularity for the new statuses.
+
+    async def attach_planned_action(
+        self, action_id: UUID, planned_action_id: UUID
+    ) -> AutonomousRunAction:
+        """Link an autonomous action to the M7.2 PlannedAction that routes it."""
+        action = await self._get_action(action_id)
+        action.planned_action_id = planned_action_id
+        await self._action_repo.update(action)
+        return action
+
+    async def mark_action_blocked(
+        self, action_id: UUID, *, reason: str
+    ) -> AutonomousRunAction:
+        """Mark a proposed action blocked (rejected by validator or category 0)."""
+        action = await self._get_action(action_id)
+        if action.status != "proposed":
+            raise AutonomousActionNotApprovableError(action_id, action.status)
+        action.status = "blocked"
+        action.rejection_reason = reason
+        await self._action_repo.update(action)
+        return action
+
+    async def mark_action_duplicate(self, action_id: UUID) -> AutonomousRunAction:
+        """Mark a proposed action as a within-run repetition (deduped)."""
+        action = await self._get_action(action_id)
+        if action.status == "proposed":
+            action.status = "duplicate"
+            await self._action_repo.update(action)
+        return action
+
+    async def mark_action_auto_approved(
+        self, action_id: UUID, *, approved_by: UUID
+    ) -> AutonomousRunAction:
+        """Grant policy-based approval (AUTO_POLICY) attributed to `approved_by`.
+
+        This is NOT a human click — `approval_mode` is recorded as
+        auto_policy so the audit trail can never be misread as a manual
+        approval. `approved_by` carries the responsible initiator for
+        attribution only.
+        """
+        action = await self._get_action(action_id)
+        if action.status != "proposed":
+            raise AutonomousActionNotApprovableError(action_id, action.status)
+        action.status = "approved"
+        action.approval_mode = "auto_policy"
+        action.approved_by = approved_by
+        action.approved_at = self._clock.utcnow()
+        await self._action_repo.update(action)
+        return action
+
+    async def mark_action_failed(
+        self, action_id: UUID, *, reason: str
+    ) -> AutonomousRunAction:
+        """Record that execution failed (e.g., execution-time re-validation)."""
+        action = await self._get_action(action_id)
+        action.status = "failed"
+        action.rejection_reason = reason
+        await self._action_repo.update(action)
         return action
 
     async def list_actions(

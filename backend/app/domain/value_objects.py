@@ -279,6 +279,12 @@ VALID_AUTONOMOUS_TRANSITIONS: dict[
     AutonomousRunStatus.PLANNING: frozenset(
         {
             AutonomousRunStatus.AWAITING_APPROVAL,
+            # M7.4 Phase 2 (additive): PLANNING may advance directly to
+            # EXECUTING (all decisions were auto-approved by policy for
+            # the bounded cycle) or COMPLETED (planner exhausted / budget
+            # spent with nothing left to execute).
+            AutonomousRunStatus.EXECUTING,
+            AutonomousRunStatus.COMPLETED,
             AutonomousRunStatus.FAILED,
             AutonomousRunStatus.CANCELLED,
         }
@@ -315,8 +321,28 @@ AUTONOMOUS_TERMINAL_STATUSES = frozenset({
 
 
 class ActionCategory(str, Enum):
-    """Action risk classification for approval policy (M7.4)."""
+    """Action risk classification for the autonomous approval policy (M7.4).
 
-    CATEGORY_0 = "category_0"  # Passive — auto-approved
-    CATEGORY_1 = "category_1"  # Active — human approval required
-    CATEGORY_2 = "category_2"  # Destructive — never approved
+    Semantics follow the M7.4 task spec:
+    - CATEGORY_0: blocked — never executed autonomously (nor approved).
+    - CATEGORY_1: requires explicit human approval; the autonomous run
+      pauses and the action awaits a manual decision via the existing API.
+    - CATEGORY_2: eligible for controlled autonomous execution under a
+      bounded cycle — approved by policy (approval_mode=AUTO_POLICY),
+      attributed to the initiating user, never fabricated human approval.
+    """
+
+    CATEGORY_0 = "category_0"  # Blocked — never autonomously executed
+    CATEGORY_1 = "category_1"  # Human approval required
+    CATEGORY_2 = "category_2"  # Eligible for controlled auto-execution
+
+
+class ApprovalMode(str, Enum):
+    """How an autonomous action's approval was obtained (M7.4 Phase 2).
+
+    The audit trail must never fabricate manual human approval for a
+    policy-driven decision — the mode distinguishes the two explicitly.
+    """
+
+    MANUAL = "manual"  # Explicit human approval via the API
+    AUTO_POLICY = "auto_policy"  # Granted by bounded-run policy, attributed to initiator

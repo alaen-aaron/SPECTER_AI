@@ -662,6 +662,8 @@ class AutonomousRunAction:
     status: str = "proposed"
     approved_by: UUID | None = None
     approved_at: datetime | None = None
+    approval_mode: str | None = None
+    planned_action_id: UUID | None = None
     rejection_reason: str | None = None
     scan_id: UUID | None = None
     result_summary: dict[str, object] = field(default_factory=dict)

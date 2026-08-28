@@ -13,17 +13,22 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 
 from app.api.v1.deps import (
+    get_autonomous_orchestrator,
     get_autonomous_service,
     get_current_user,
+    get_planner_service,
     require_project_role,
 )
 from app.api.v1.schemas.autonomous import (
+    AutonomousCycleResponse,
     AutonomousRunActionResponse,
     AutonomousRunResponse,
     CreateAutonomousRunRequest,
     PaginatedAutonomousRunResponse,
 )
+from app.application.autonomous_orchestrator import AutonomousOrchestrator
 from app.application.autonomous_service import AutonomousService
+from app.application.planner_service import PlannerService
 from app.domain.entities import OrganizationMember, ProjectMember, User
 from app.domain.value_objects import ProjectRole
 
@@ -143,6 +148,38 @@ async def plan_complete(
 
 
 @router.post(
+    "/autonomous-runs/{run_id}/cycle",
+    response_model=AutonomousCycleResponse,
+    summary="Run one bounded planner→validator→execution cycle (M7.4 Phase 2)",
+    description=(
+        "The controlled loop driver. One call = at most one planning burst "
+        "(capped by the run budget), decision classification, policy "
+        "auto-approval and execution of category-2 actions, and a single "
+        "state-machine advance. Category-1 actions pause the run at "
+        "AWAITING_APPROVAL for a human decision; nothing is ever executed "
+        "sans category-2 policy approval or an explicit human approval. "
+        "Execution always flows through the existing "
+        "execute_approved() → ScanService.create() → Scope Guard → Celery "
+        "→ M7.1 isolated executor."
+    ),
+)
+async def run_cycle(
+    run_id: UUID,
+    _member: ProjectMember | OrganizationMember = Depends(
+        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+    ),
+    orchestrator: AutonomousOrchestrator = Depends(get_autonomous_orchestrator),
+) -> AutonomousCycleResponse:
+    outcome = await orchestrator.cycle(run_id)
+    return AutonomousCycleResponse(
+        run=AutonomousRunResponse.model_validate(outcome.run),
+        summary=outcome.summary,
+        executed_scan_ids=list(outcome.executed_scan_ids),
+        stopped_because=outcome.stopped_because,
+    )
+
+
+@router.post(
     "/autonomous-runs/{run_id}/approve",
     response_model=AutonomousRunResponse,
     summary="Approve all proposed actions and transition to EXECUTING",
@@ -154,10 +191,17 @@ async def approve_run(
         require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
+    planner: PlannerService = Depends(get_planner_service),
 ) -> AutonomousRunResponse:
     actions = await service.list_actions(run_id, status="proposed")
     for action in actions:
         await service.approve_action(action.id, approved_by=current_user.id)
+        if action.planned_action_id is not None:
+            # Approval mode == MANUAL; the M7.2 PlannedAction must match so
+            # execute_approved() can route the human-approved action later.
+            await planner.approve(
+                action.planned_action_id, approved_by=current_user.id
+            )
     run = await service.approval_granted(run_id)
     return AutonomousRunResponse.model_validate(run)
 
@@ -236,8 +280,11 @@ async def approve_action_endpoint(
         require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
+    planner: PlannerService = Depends(get_planner_service),
 ) -> AutonomousRunActionResponse:
     action = await service.approve_action(action_id, approved_by=current_user.id)
+    if action.planned_action_id is not None:
+        await planner.approve(action.planned_action_id, approved_by=current_user.id)
     return AutonomousRunActionResponse.model_validate(action)
 
 
@@ -248,11 +295,20 @@ async def approve_action_endpoint(
 )
 async def reject_action_endpoint(
     action_id: UUID,
+    current_user: User = Depends(get_current_user),
     reason: str = "",
     _member: ProjectMember | OrganizationMember = Depends(
         require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
+    planner: PlannerService = Depends(get_planner_service),
 ) -> AutonomousRunActionResponse:
-    action = await service.reject_action(action_id, reason or "Rejected by human operator")
+    full_reason = reason or "Rejected by human operator"
+    action = await service.reject_action(action_id, full_reason)
+    if action.planned_action_id is not None:
+        await planner.reject(
+            action.planned_action_id,
+            rejected_by=current_user.id,
+            reason=full_reason,
+        )
     return AutonomousRunActionResponse.model_validate(action)

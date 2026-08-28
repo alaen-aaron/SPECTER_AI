@@ -82,6 +82,10 @@ class AutonomousRunActionModel(Base):
         PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    approval_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    planned_action_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("planned_actions.id"), nullable=True
+    )
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     scan_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("scans.id"), nullable=True
