@@ -37,5 +37,9 @@ celery_app.conf.update(
             "task": "specter.tick_schedules",
             "schedule": 30.0,  # every 30 seconds
         },
+        "recover-autonomous-runs": {
+            "task": "specter.recover_autonomous_runs",
+            "schedule": 60.0,  # every 60 seconds
+        },
     },
 )

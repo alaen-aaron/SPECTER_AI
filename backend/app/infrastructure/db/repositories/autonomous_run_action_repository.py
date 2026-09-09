@@ -35,6 +35,7 @@ def _to_entity(row: AutonomousRunActionModel) -> AutonomousRunAction:
         scan_id=row.scan_id,
         result_summary=row.result_summary or {},
         created_at=row.created_at,
+        retry_count=row.retry_count,
     )
 
 
@@ -64,6 +65,7 @@ class SqlAlchemyAutonomousRunActionRepository:
             rejection_reason=action.rejection_reason,
             scan_id=action.scan_id,
             result_summary=action.result_summary,
+            retry_count=action.retry_count,
         )
         self._session.add(model)
         await self._session.flush()
@@ -98,6 +100,7 @@ class SqlAlchemyAutonomousRunActionRepository:
         row.rejection_reason = action.rejection_reason
         row.scan_id = action.scan_id
         row.result_summary = action.result_summary
+        row.retry_count = action.retry_count
         await self._session.flush()
 
     async def get_last_action_fingerprint(self, run_id: UUID) -> str | None:

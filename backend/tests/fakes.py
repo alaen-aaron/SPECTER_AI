@@ -68,6 +68,7 @@ from app.domain.value_objects import (
     PlannedActionStatus,
     ProjectRole,
     ReportStatus,
+    ScanFailureKind,
     ScanStatus,
     Severity,
 )
@@ -376,13 +377,21 @@ class FakeScanRepository:
             scan.artifacts_path = artifacts_path
             scan.completed_at = datetime.now(UTC)
 
-    async def fail(self, scan_id: UUID, error_message: str, exit_code: int | None) -> None:
+    async def fail(
+        self,
+        scan_id: UUID,
+        error_message: str,
+        exit_code: int | None,
+        failure_kind: object | None = None,
+    ) -> None:
         scan = self._scans.get(scan_id)
         if scan is not None:
             scan.status = ScanStatus.FAILED
             scan.error_message = error_message
             scan.exit_code = exit_code
             scan.completed_at = datetime.now(UTC)
+            if isinstance(failure_kind, ScanFailureKind):
+                scan.failure_kind = failure_kind
 
 
 class FakeToolResultRepository:
@@ -447,23 +456,6 @@ class FakeAssetRepository:
         existing.metadata = asset.metadata
         if asset.identity_key is not None:
             existing.identity_key = asset.identity_key
-
-    async def upsert(self, asset: Asset) -> Asset:
-        for existing in self._assets.values():
-            if (
-                existing.project_id == asset.project_id
-                and existing.asset_type == asset.asset_type
-                and existing.value == asset.value
-            ):
-                existing.last_seen = asset.last_seen
-                existing.source_scan_id = asset.source_scan_id
-                existing.metadata = asset.metadata
-                existing.in_scope = asset.in_scope
-                if asset.identity_key is not None:
-                    existing.identity_key = asset.identity_key
-                return self._snapshot(existing)
-        self._assets[asset.id] = self._snapshot(asset)
-        return self._snapshot(asset)
 
     async def upsert(self, asset: Asset) -> Asset:
         for existing in self._assets.values():
@@ -1121,6 +1113,10 @@ class FakeAIContextMemoryRepository:
 class FakeAutonomousRunRepository:
     def __init__(self) -> None:
         self._runs: dict[UUID, AutonomousRun] = {}
+        # M7.4 Phase 4: tests flip this to False to simulate the durable
+        # advisory cycle lock being held by another process.
+        self.cycle_lock_available = True
+        self.cycle_lock_attempts = 0
 
     async def create(self, run: AutonomousRun) -> None:
         self._runs[run.id] = run
@@ -1167,6 +1163,31 @@ class FakeAutonomousRunRepository:
 
     async def count_actions(self, run_id: UUID) -> int:
         return sum(1 for a in self._action_runs if a.run_id == run_id)
+
+    async def try_cycle_lock(self, run_id: UUID) -> bool:
+        """Fake the PG advisory xact lock. Records usage; honors the flag."""
+        self.cycle_lock_attempts += 1
+        return self.cycle_lock_available
+
+    async def list_stale_active(self, threshold: datetime) -> list[AutonomousRun]:
+        terminal = {
+            AutonomousRunStatus.COMPLETED,
+            AutonomousRunStatus.CANCELLED,
+            AutonomousRunStatus.FAILED,
+        }
+        stale = []
+        for run in self._runs.values():
+            if run.status in terminal:
+                continue
+            anchor = run.last_heartbeat_at or run.started_at
+            if anchor is not None and anchor < threshold:
+                stale.append(run)
+        stale.sort(
+            key=lambda r: r.last_heartbeat_at
+            or r.started_at
+            or datetime.min.replace(tzinfo=UTC)
+        )
+        return stale
 
     # Set by FakeAutonomousRunActionRepository for count_actions
     _action_runs: list[AutonomousRunAction] = []
@@ -1363,6 +1384,20 @@ class FakePlannerService:
         action.status = PlannedActionStatus.REJECTED
         action.rejection_reason = reason
         self.rejected.append(action_id)
+        return action
+
+    async def reapprove(
+        self, action_id: UUID, *, approved_by: UUID | None = None
+    ) -> PlannedAction:
+        """M7.4 Phase 4 — EXECUTED→APPROVED (transport retry only)."""
+        action = self._get(action_id)
+        if action.status is not PlannedActionStatus.EXECUTED:
+            from app.domain.exceptions import PlannedActionNotApprovableError
+
+            raise PlannedActionNotApprovableError(action_id, action.status.value)
+        action.status = PlannedActionStatus.APPROVED
+        action.approved_by = approved_by
+        self.approved.append(action_id)
         return action
 
     async def get(self, action_id: UUID) -> PlannedAction:

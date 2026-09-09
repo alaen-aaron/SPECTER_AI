@@ -11,13 +11,15 @@ that arrives in Phase 2. This service owns:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from app.domain.entities import AutonomousRun, AutonomousRunAction
+from app.domain.entities import AutonomousRun, AutonomousRunAction, Scan
 from app.domain.exceptions import (
     AutonomousActionNotApprovableError,
+    AutonomousActionNotRetryableError,
     AutonomousRunActiveExistsError,
     AutonomousRunBudgetExceededError,
     AutonomousRunInvalidTransitionError,
@@ -42,6 +44,13 @@ class _IdGenerator(Protocol):
     def __call__(self) -> UUID: ...
 
 
+# Soft-cancel boundary (M7.4 Phase 4). Satisfied structurally by
+# ``ScanService.cancel`` (returns the updated Scan; callers ignore it).
+# ``Awaitable[Scan]`` is covariant, so a coroutine returning Scan (or
+# anything narrower) matches directly — no adapter class needed.
+ScanCanceller = Callable[[UUID], Awaitable[Scan]]
+
+
 class AutonomousService:
     """Use-case service for autonomous scan orchestration."""
 
@@ -52,11 +61,13 @@ class AutonomousService:
         *,
         clock: _Clock | None = None,
         id_factory: _IdGenerator | None = None,
+        scan_canceller: ScanCanceller | None = None,
     ) -> None:
         self._run_repo = run_repo
         self._action_repo = action_repo
         self._clock = clock or _SystemClock()
         self._id = id_factory or uuid4
+        self._scan_canceller = scan_canceller
 
     # ── CRUD ──────────────────────────────────────────────────────────────
 
@@ -106,11 +117,18 @@ class AutonomousService:
         )
 
     async def cancel(self, run_id: UUID) -> AutonomousRun:
-        """Cancel a run that hasn't reached a terminal state."""
+        """Cancel a run that hasn't reached a terminal state.
+
+        Cooperative/soft cancellation (M7.4 Phase 4): flips the run's own
+        status, then soft-cancels any scans its executed actions already
+        dispatched (the worker honours a cancelled status and never invokes
+        the plugin). Subprocesses are never killed.
+        """
         run = await self.get(run_id)
         if run.is_terminal:
             raise AutonomousRunNotCancellableError(run_id, run.status.value)
         await self._transition(run, AutonomousRunStatus.CANCELLED)
+        await self._cancel_linked_scans(run)
         return run
 
     async def get_active_for_project(self, project_id: UUID) -> AutonomousRun | None:
@@ -283,16 +301,72 @@ class AutonomousService:
         action_id: UUID,
         scan_id: UUID,
     ) -> AutonomousRunAction:
-        """Record that an action was dispatched as a scan."""
+        """Record that an action was dispatched as a scan.
+
+        Idempotent (M7.4 Phase 4): re-recording an already-``executed``
+        action (recovery adoption, transport retry) refreshes ``scan_id``
+        but never double-increments the run's ``actions_completed`` budget.
+        """
         action = await self._get_action(action_id)
+        already_executed = action.status == "executed"
         action.scan_id = scan_id
         action.status = "executed"
         await self._action_repo.update(action)
 
-        # Increment the run's completed counter
-        run = await self.get(action.run_id)
-        run.actions_completed += 1
-        await self._run_repo.update(run)
+        if not already_executed:
+            # Increment the run's completed counter exactly once per action.
+            run = await self.get(action.run_id)
+            run.actions_completed += 1
+            await self._run_repo.update(run)
+        return action
+
+    async def retry_action_execution(
+        self,
+        action_id: UUID,
+        scan_id: UUID,
+        *,
+        max_retries: int = 1,
+    ) -> AutonomousRunAction:
+        """Record a transport-failure retry dispatch (M7.4 Phase 4).
+
+        Re-points the action at the retry's scan and bumps ``retry_count``.
+        ``actions_completed`` is NOT incremented — the original dispatch
+        already counted it. Raises ``AutonomousActionNotRetryableError``
+        when the action is not executed, or already exhausted its retry
+        budget.
+        """
+        action = await self._get_action(action_id)
+        if action.status != "executed":
+            raise AutonomousActionNotRetryableError(
+                action_id, action.status, "only executed actions may be retried"
+            )
+        if action.retry_count >= max_retries:
+            raise AutonomousActionNotRetryableError(
+                action_id,
+                action.status,
+                f"retry budget exhausted (max_retries={max_retries})",
+            )
+
+        previous_scan_id = action.scan_id
+        action.scan_id = scan_id
+        action.retry_count += 1
+
+        # Keep the failed attempt lineage observable (the audit trail and
+        # the scans table retain the full rows; this is a compact index).
+        attempts: list[UUID] = []
+        raw = action.result_summary.get("scan_attempt_ids")
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str):
+                    try:
+                        attempts.append(UUID(item))
+                    except ValueError:
+                        continue
+        if previous_scan_id is not None:
+            attempts.append(previous_scan_id)
+        action.result_summary["scan_attempt_ids"] = [str(s) for s in attempts]
+
+        await self._action_repo.update(action)
         return action
 
     # ── Phase 2 additive lifecycle granularity ─────────────────────────────
@@ -386,6 +460,21 @@ class AutonomousService:
             from app.domain.exceptions import PlannedActionNotFoundError
             raise PlannedActionNotFoundError(action_id)
         return action
+
+    async def _cancel_linked_scans(self, run: AutonomousRun) -> None:
+        """Soft-cancel every scan an executed action already dispatched."""
+        if self._scan_canceller is None:
+            return
+        actions = await self._action_repo.list_for_run(run.id, status="executed")
+        for action in actions:
+            if action.scan_id is None:
+                continue
+            try:
+                await self._scan_canceller(action.scan_id)
+            except Exception:  # noqa: BLE001 - soft cancel is best-effort
+                # A scan past its cancellable window (e.g. already terminal)
+                # is left alone; the run status flip is what matters.
+                continue
 
 
 class _SystemClock:

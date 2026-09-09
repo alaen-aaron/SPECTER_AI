@@ -255,7 +255,13 @@ class _FakeScanRepo:
             scan.status = ScanStatus.COMPLETED
             scan.exit_code = exit_code
 
-    async def fail(self, scan_id: UUID, error_message: str, exit_code: int | None) -> None:
+    async def fail(
+        self,
+        scan_id: UUID,
+        error_message: str,
+        exit_code: int | None,
+        failure_kind: object | None = None,
+    ) -> None:
         scan = self._scans.get(scan_id)
         if scan is not None:
             scan.status = ScanStatus.FAILED

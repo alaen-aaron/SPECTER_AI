@@ -103,6 +103,13 @@ class Settings(BaseSettings):
     EXECUTOR_CPU_LIMIT: float = Field(default=1.0)
     EXECUTOR_MEMORY_LIMIT: str = Field(default="512m")
 
+    # --- Autonomous recovery (M7.4 Phase 4) -----------------------------------
+    # Only TRANSPORT failures (the plugin never ran) are retried, and at most
+    # once per action. Stale (heartbeat-lost) non-terminal runs surface to the
+    # recovery supervisor after this many seconds.
+    AUTONOMOUS_MAX_RETRIES_PER_ACTION: int = Field(default=1)
+    AUTONOMOUS_STALLED_THRESHOLD_SECONDS: int = Field(default=300)
+
     @property
     def is_local(self) -> bool:
         return self.APP_ENV == AppEnvironment.LOCAL

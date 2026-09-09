@@ -40,6 +40,7 @@ from app.application.auth_service import (
 from app.application.authorization_service import AuthorizationRecordService
 from app.application.autonomous_observation import ObservationIngestService
 from app.application.autonomous_orchestrator import AutonomousOrchestrator
+from app.application.autonomous_recovery import AutonomousRecoveryService
 from app.application.autonomous_service import AutonomousService
 from app.application.context_memory_service import ContextMemoryService
 from app.application.evidence_service import EvidenceService
@@ -1065,12 +1066,37 @@ def get_autonomous_service(
     action_repo: SqlAlchemyAutonomousRunActionRepository = Depends(
         get_autonomous_action_repository
     ),
+    scan_service: ScanService = Depends(get_scan_service),
 ) -> AutonomousService:
-    return AutonomousService(run_repo=run_repo, action_repo=action_repo)
+    return AutonomousService(
+        run_repo=run_repo,
+        action_repo=action_repo,
+        # M7.4 Phase 4: cancelling a run soft-cancels the scans its executed
+        # actions dispatched (never kills subprocesses / bypasses the executor).
+        scan_canceller=scan_service.cancel,
+    )
 
 
 def get_action_classification_policy() -> ActionClassificationPolicy:
     return ActionClassificationPolicy()
+
+
+def get_autonomous_recovery_service(
+    autonomous_service: AutonomousService = Depends(get_autonomous_service),
+    planner: PlannerService = Depends(get_planner_service),
+    scan_service: ScanService = Depends(get_scan_service),
+    scan_repo: SqlAlchemyScanRepository = Depends(get_scan_repository),
+    audit_repo: SqlAlchemyAuditLogRepository = Depends(get_audit_log_repository),
+    settings: Settings = Depends(get_settings),
+) -> AutonomousRecoveryService:
+    return AutonomousRecoveryService(
+        autonomous_service=autonomous_service,
+        planner=planner,
+        launcher=scan_service.create,
+        scan_repository=scan_repo,
+        audit_repository=audit_repo,
+        max_retries_per_action=settings.AUTONOMOUS_MAX_RETRIES_PER_ACTION,
+    )
 
 
 def get_autonomous_orchestrator(
@@ -1088,6 +1114,7 @@ def get_autonomous_orchestrator(
     asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
     finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
     target_repo: SqlAlchemyTargetRepository = Depends(get_target_repository),
+    recovery: AutonomousRecoveryService = Depends(get_autonomous_recovery_service),
 ) -> AutonomousOrchestrator:
     observation = ObservationIngestService(
         action_repository=action_repo,
@@ -1105,4 +1132,5 @@ def get_autonomous_orchestrator(
         classification=classification,
         audit_repository=audit_repo,
         observation=observation,
+        recovery=recovery,
     )

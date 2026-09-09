@@ -340,3 +340,155 @@ async def _run_ai_analysis(project_id: UUID) -> None:
             await session.commit()
     finally:
         await engine.dispose()
+
+
+@celery_app.task(name="specter.recover_autonomous_runs")
+def recover_autonomous_runs_task() -> None:
+    """M7.4 Phase 4 — periodic recovery supervisor (Celery Beat).
+
+    Finds non-terminal autonomous runs whose progress anchor
+    (``last_heartbeat_at`` falling back to ``started_at``) has gone stale
+    and runs the fail-closed recovery settlement on each: transport
+    failures are retried once (never re-running a plugin that already
+    ran), EXECUTING runs whose executed scans all went terminal are
+    advanced, and ambiguous runs (executed action whose scan is gone)
+    are failed. Runs with live scans are left untouched.
+    """
+    asyncio.run(_recover_stale_autonomous_runs())
+
+
+async def _recover_stale_autonomous_runs() -> None:
+    # Same local-import discipline as the other async task bodies: the
+    # Celery app imports this module at process start, but the DB/API
+    # stack is only loaded once a task actually runs.
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import app.plugins.builtin  # noqa: F401 - side-effect import, registers built-in plugins
+    from app.application.action_validator import ActionProposalValidator
+    from app.application.autonomous_recovery import AutonomousRecoveryService
+    from app.application.autonomous_service import AutonomousService
+    from app.application.planner_service import PlannerService
+    from app.application.scan_service import ScanService
+    from app.application.scope_guard_service import ScopeGuardService
+    from app.core.config import get_settings
+    from app.infrastructure.celery_app.dispatch_after_commit import (
+        drain_pending_dispatches,
+    )
+    from app.infrastructure.celery_app.dispatcher import (
+        AfterCommitScanTaskDispatcher,
+        CeleryScanTaskDispatcher,
+    )
+    from app.infrastructure.db.repositories.ai_context_memory_repository import (
+        SqlAlchemyAIContextMemoryRepository,
+    )
+    from app.infrastructure.db.repositories.asset_repository import (
+        SqlAlchemyAssetRepository,
+    )
+    from app.infrastructure.db.repositories.audit_log_repository import (
+        SqlAlchemyAuditLogRepository,
+    )
+    from app.infrastructure.db.repositories.authorization_repository import (
+        SqlAlchemyAuthorizationRecordRepository,
+    )
+    from app.infrastructure.db.repositories.autonomous_run_action_repository import (
+        SqlAlchemyAutonomousRunActionRepository,
+    )
+    from app.infrastructure.db.repositories.autonomous_run_repository import (
+        SqlAlchemyAutonomousRunRepository,
+    )
+    from app.infrastructure.db.repositories.finding_repository import (
+        SqlAlchemyFindingRepository,
+    )
+    from app.infrastructure.db.repositories.planned_action_repository import (
+        SqlAlchemyPlannedActionRepository,
+    )
+    from app.infrastructure.db.repositories.project_repository import (
+        SqlAlchemyProjectRepository,
+    )
+    from app.infrastructure.db.repositories.scan_repository import (
+        SqlAlchemyScanRepository,
+    )
+    from app.infrastructure.db.repositories.target_repository import (
+        SqlAlchemyTargetRepository,
+    )
+    from app.plugins.manager import PluginManager
+    from app.plugins.registry import registry as plugin_registry
+
+    settings = get_settings()
+    engine = create_async_engine(str(settings.DATABASE_URL))
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            run_repo = SqlAlchemyAutonomousRunRepository(session)
+            action_repo = SqlAlchemyAutonomousRunActionRepository(session)
+            scan_repo = SqlAlchemyScanRepository(session)
+            planned_action_repo = SqlAlchemyPlannedActionRepository(session)
+            finding_repo = SqlAlchemyFindingRepository(session)
+            asset_repo = SqlAlchemyAssetRepository(session)
+            context_memory_repo = SqlAlchemyAIContextMemoryRepository(session)
+            project_repo = SqlAlchemyProjectRepository(session)
+            target_repo = SqlAlchemyTargetRepository(session)
+            auth_repo = SqlAlchemyAuthorizationRecordRepository(session)
+            audit_repo = SqlAlchemyAuditLogRepository(session)
+
+            scope_guard = ScopeGuardService(project_repo, target_repo, auth_repo)
+            plugin_policy = PluginManager(plugin_registry)
+            validator = ActionProposalValidator(
+                policy_validator=plugin_policy,
+                plugin_lookup=plugin_registry,
+                target_repository=target_repo,
+                action_repository=planned_action_repo,
+                scope_guard=scope_guard,
+                executor_enabled=settings.EXECUTOR_ENABLED,
+                executor_image=settings.EXECUTOR_IMAGE,
+            )
+            planner = PlannerService(
+                planned_action_repo=planned_action_repo,
+                finding_repo=finding_repo,
+                asset_repo=asset_repo,
+                context_memory_repo=context_memory_repo,
+                project_repo=project_repo,
+                audit_repo=audit_repo,
+            )
+            planner.set_validator(validator)
+
+            # Scan dispatch must happen strictly AFTER this task's commit —
+            # reused from the Phase 3 request path so a retried scan can never
+            # be picked up before its row exists.
+            scan_service = ScanService(
+                scan_repo,
+                scope_guard,
+                plugin_policy,
+                AfterCommitScanTaskDispatcher(inner=CeleryScanTaskDispatcher()),
+            )
+            autonomous_service = AutonomousService(
+                run_repo=run_repo,
+                action_repo=action_repo,
+                scan_canceller=scan_service.cancel,
+            )
+            recovery = AutonomousRecoveryService(
+                autonomous_service=autonomous_service,
+                planner=planner,
+                launcher=scan_service.create,
+                scan_repository=scan_repo,
+                audit_repository=audit_repo,
+                max_retries_per_action=settings.AUTONOMOUS_MAX_RETRIES_PER_ACTION,
+            )
+
+            now = datetime.now(UTC)
+            threshold = now - timedelta(seconds=settings.AUTONOMOUS_STALLED_THRESHOLD_SECONDS)
+            stale_runs = await run_repo.list_stale_active(threshold)
+
+            for run in stale_runs:
+                try:
+                    await recovery.recover_stale(run.id)
+                    await session.commit()
+                    drain_pending_dispatches()
+                except Exception:  # noqa: BLE001 - one bad run never blocks the sweep
+                    await session.rollback()
+                    continue
+    finally:
+        await engine.dispose()

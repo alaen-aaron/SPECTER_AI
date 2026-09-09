@@ -485,3 +485,23 @@ class AutonomousActionExecutionError(DomainError):
         super().__init__(
             f"Autonomous action {action_id} (run {run_id}) failed: {message}"
         )
+
+
+class AutonomousActionNotRetryableError(DomainError):
+    """An autonomous action may not be retried (M7.4 Phase 4).
+
+    Raised when recovery attempts to re-dispatch an action that is not
+    in a retryable state (e.g. it was never executed, or it already
+    exhausted its retry budget). Only TRANSPORT-failed actions whose
+    scan never ran may be retried, at most `max_retries_per_action`
+    times — everything else fails closed.
+    """
+
+    def __init__(self, action_id: UUID, current_status: str, reason: str) -> None:
+        self.action_id = action_id
+        self.current_status = current_status
+        self.reason = reason
+        super().__init__(
+            f"Autonomous action {action_id} cannot be retried from status "
+            f"'{current_status}': {reason}"
+        )

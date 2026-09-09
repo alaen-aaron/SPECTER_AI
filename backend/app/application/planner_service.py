@@ -341,6 +341,34 @@ class PlannerService:
         await self._action_repo.update(action)
         return action
 
+    async def reapprove(
+        self,
+        action_id: UUID,
+        *,
+        approved_by: UUID | None = None,
+    ) -> PlannedAction:
+        """M7.4 Phase 4 — EXECUTED → APPROVED for a retryable transport failure.
+
+        The ONLY path that re-arms an already-``EXECUTED`` planned action,
+        and the only way a scan is ever auto-dispatched twice for one
+        action. Strictly narrower than ``approve``: it requires the action
+        to be ``EXECUTED`` (i.e. a previous attempt exists) and is invoked
+        exclusively by autonomous recovery, which has already verified the
+        previous attempt's scan FAILED with ``failure_kind == transport``
+        (the plugin never ran) and that the retry budget is unspent.
+        """
+        action = await self._action_repo.get(action_id)
+        if action is None:
+            raise PlannedActionNotFoundError(action_id)
+
+        if action.status is not PlannedActionStatus.EXECUTED:
+            raise PlannedActionNotApprovableError(action_id, action.status.value)
+
+        action.status = PlannedActionStatus.APPROVED
+        action.approved_by = approved_by
+        await self._action_repo.update(action)
+        return action
+
     async def get(self, action_id: UUID) -> PlannedAction:
         action = await self._action_repo.get(action_id)
         if action is None:

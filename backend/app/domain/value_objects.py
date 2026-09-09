@@ -108,6 +108,28 @@ SCAN_TERMINAL_STATUSES = frozenset({ScanStatus.COMPLETED, ScanStatus.FAILED, Sca
 SCAN_CANCELLABLE_STATUSES = frozenset({ScanStatus.QUEUED, ScanStatus.RUNNING})
 
 
+class ScanFailureKind(str, Enum):
+    """Why a scan reached `failed` (M7.4 Phase 4 — failure recovery).
+
+    Drives the autonomous retry policy. Only `TRANSPORT` failures are
+    retryable: the plugin never ran (the isolated executor / host was
+    unreachable or the dispatch was lost), so a retry cannot duplicate
+    work. `TOOL` and `DOMAIN` failures mean the plugin either ran and
+    failed (non-zero exit, timeout, internal error) or the scan was
+    refused by policy at execution time (Scope Guard re-validation) —
+    retrying those would re-run a tool that already executed, which the
+    fail-closed recovery model never does.
+    """
+
+    TRANSPORT = "transport"
+    TOOL = "tool"
+    DOMAIN = "domain"
+
+    @classmethod
+    def retryable(cls) -> frozenset[ScanFailureKind]:
+        return frozenset({cls.TRANSPORT})
+
+
 class AssetType(str, Enum):
     """Asset classification (SRS §2.3 FR-3.2)."""
 

@@ -36,6 +36,7 @@ from app.domain.value_objects import (
     ProjectState,
     ReportStatus,
     RiskScoreSource,
+    ScanFailureKind,
     ScanStatus,
     ScheduleFrequency,
     Severity,
@@ -225,6 +226,11 @@ class Scan:
     artifacts_path: str | None = None
     exit_code: int | None = None
     error_message: str | None = None
+
+    # M7.4 Phase 4: failure classification on the Scan row, set by the
+    # ExecutionEngine at fail time and used by autonomous recovery to
+    # decide whether an action's dispatch may be retried.
+    failure_kind: ScanFailureKind | None = None
 
     @property
     def is_terminal(self) -> bool:
@@ -668,3 +674,8 @@ class AutonomousRunAction:
     scan_id: UUID | None = None
     result_summary: dict[str, object] = field(default_factory=dict)
     created_at: datetime | None = None
+
+    # M7.4 Phase 4: how many times this action's scan dispatch has been
+    # retried after a retryable (TRANSPORT) failure. Never exceeds the
+    # run's max_retries_per_action budget (default 1).
+    retry_count: int = 0

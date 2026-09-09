@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -49,6 +49,22 @@ class AutonomousRunModel(Base):
         Index("idx_autonomous_runs_project", "project_id"),
         Index("idx_autonomous_runs_status", "status"),
         Index("idx_autonomous_runs_active_project", "project_id", "status"),
+        # M7.4 Phase 4 — the authoritative one-active-run-per-project guard.
+        # A partial unique index is the only race-proof way to express
+        # "at most one non-terminal run per project" at the storage layer:
+        # terminal rows are excluded from the index, so completing/
+        # cancelling/failing a run automatically frees the slot without any
+        # trigger logic. The application-layer check in AutonomousService
+        # stays as a fast, friendly error path; this constraint is what
+        # actually wins the concurrent-create race.
+        Index(
+            "uq_autonomous_runs_active_project",
+            "project_id",
+            unique=True,
+            postgresql_where=text(
+                "status NOT IN ('completed', 'cancelled', 'failed')"
+            ),
+        ),
     )
 
 
@@ -93,8 +109,21 @@ class AutonomousRunActionModel(Base):
     result_summary: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
+    # M7.4 Phase 4: transport-failure retry counter, capped by the run's
+    # max_retries_per_action budget (default 1).
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
     __table_args__ = (
         Index("idx_autonomous_actions_run", "run_id"),
         Index("idx_autonomous_actions_project", "project_id"),
         Index("idx_autonomous_actions_status", "status"),
+        # M7.4 Phase 4 idempotency: at most one autonomous action may ever
+        # link to the same M7.2 PlannedAction. A recovery/adoption path can
+        # never double-claim a planned action this way.
+        Index(
+            "uq_autonomous_actions_planned_action",
+            "planned_action_id",
+            unique=True,
+            postgresql_where=text("planned_action_id IS NOT NULL"),
+        ),
     )

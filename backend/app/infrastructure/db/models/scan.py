@@ -43,6 +43,11 @@ class ScanModel(Base):
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # M7.4 Phase 4: failure classification (transport | tool | domain),
+    # set by the ExecutionEngine when the scan fails. Null for scans that
+    # never failed. Drives the autonomous retry policy.
+    failure_kind: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
     __table_args__ = (
         Index("idx_scans_project", "project_id"),
         Index("idx_scans_status", "status"),

@@ -91,6 +91,10 @@ class ExecutorHttpRunner(CommandRunner):
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
+            # M7.4 Phase 4: the plugin never ran — the executor host /
+            # network was unreachable. Classified TRANSPORT so autonomous
+            # recovery may safely retry without duplicating work.
+            meta["failure_kind"] = "transport"
             return PluginResult(
                 success=False,
                 stdout="",
@@ -106,6 +110,9 @@ class ExecutorHttpRunner(CommandRunner):
                 execution_id=execution_id,
                 timeout_seconds=timeout_seconds,
             )
+            # The container ran and was killed by its timeout — the plugin
+            # may have done work. Fail-closed: classified TOOL (non-retryable).
+            meta["failure_kind"] = "tool"
             return PluginResult(
                 success=False,
                 stdout=body.get("stdout", ""),
@@ -116,6 +123,8 @@ class ExecutorHttpRunner(CommandRunner):
 
         if status == "completed":
             exit_code = body.get("exit_code")
+            if exit_code != 0:
+                meta["failure_kind"] = "tool"
             return PluginResult(
                 success=exit_code == 0,
                 stdout=body.get("stdout", ""),
@@ -125,7 +134,9 @@ class ExecutorHttpRunner(CommandRunner):
                 metadata=meta,
             )
 
-        # status == "failed" or "error"
+        # status == "failed" or "error" — the container ran and reported a
+        # tool-level failure. Non-retryable.
+        meta["failure_kind"] = "tool"
         error = body.get("error") or body.get("stderr") or "Executor reported failure"
         return PluginResult(
             success=False,

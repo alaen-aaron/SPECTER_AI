@@ -61,6 +61,7 @@ from app.domain.value_objects import (
     PlannedActionStatus,
     ProjectRole,
     ReportStatus,
+    ScanFailureKind,
     ScanStatus,
     Severity,
 )
@@ -158,7 +159,13 @@ class ScanRepository(Protocol):
     async def update_status(self, scan_id: UUID, status: ScanStatus) -> None: ...
     async def append_log(self, scan_id: UUID, logs_path: str) -> None: ...
     async def complete(self, scan_id: UUID, exit_code: int, artifacts_path: str | None) -> None: ...
-    async def fail(self, scan_id: UUID, error_message: str, exit_code: int | None) -> None: ...
+    async def fail(
+        self,
+        scan_id: UUID,
+        error_message: str,
+        exit_code: int | None,
+        failure_kind: ScanFailureKind | None = None,
+    ) -> None: ...
 
 
 class ToolResultRepository(Protocol):
@@ -387,6 +394,24 @@ class AutonomousRunRepository(Protocol):
     async def get_active_for_project(self, project_id: UUID) -> AutonomousRun | None: ...
     async def update(self, run: AutonomousRun) -> None: ...
     async def count_actions(self, run_id: UUID) -> int: ...
+    async def try_cycle_lock(self, run_id: UUID) -> bool:
+        """M7.4 Phase 4 — durable per-run cycle guard.
+
+        PostgreSQL advisory transaction lock (pg_try_advisory_xact_lock)
+        keyed by the run id. Returns True if the caller acquired the lock,
+        False if another controller already holds it. Released automatically
+        at transaction end — never leaked across pooled connections. The
+        application-layer ``_in_flight`` set remains as a fast-fail only.
+        """
+        ...
+    async def list_stale_active(self, threshold: datetime) -> list[AutonomousRun]:
+        """M7.4 Phase 4 — non-terminal runs with no progress since `threshold`.
+
+        Anchored on ``last_heartbeat_at`` falling back to ``started_at``.
+        Used by the recovery supervisor to decide which runs need stalled
+        settlement. Returns runs in oldest-first order.
+        """
+        ...
 
 
 class AutonomousRunActionRepository(Protocol):

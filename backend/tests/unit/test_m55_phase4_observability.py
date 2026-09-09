@@ -248,7 +248,13 @@ async def test_engine_increments_scan_metrics() -> None:
             if s is not None:
                 s.status = ScanStatus.COMPLETED
 
-        async def fail(self, scan_id: UUID, error_message: str, exit_code: int | None) -> None:
+        async def fail(
+            self,
+            scan_id: UUID,
+            error_message: str,
+            exit_code: int | None,
+            failure_kind: object | None = None,
+        ) -> None:
             s = self._scans.get(scan_id)
             if s is not None:
                 s.status = ScanStatus.FAILED

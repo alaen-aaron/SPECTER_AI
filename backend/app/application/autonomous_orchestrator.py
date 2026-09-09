@@ -56,6 +56,7 @@ from uuid import UUID, uuid4
 
 from app.application.action_classifier import ActionClassificationPolicy
 from app.application.autonomous_observation import ObservationOutcome
+from app.application.autonomous_recovery import AutonomousRecoveryService
 from app.application.autonomous_service import AutonomousService
 from app.application.planner_service import PlannerService, ScanLauncher
 from app.domain.entities import AuditLogEntry, AutonomousRun, PlannedAction
@@ -113,6 +114,7 @@ class AutonomousOrchestrator:
         classification: ActionClassificationPolicy | None = None,
         audit_repository: AuditLogRepository | None = None,
         observation: ObservationSource | None = None,
+        recovery: AutonomousRecoveryService | None = None,
         cycle_max_actions: int = 3,
         session_timeout_seconds: float = 15.0,
         clock: _Clock | None = None,
@@ -124,6 +126,7 @@ class AutonomousOrchestrator:
         self._classification = classification or ActionClassificationPolicy()
         self._audit = audit_repository
         self._observation = observation
+        self._recovery = recovery
         self._cycle_max_actions = max(1, cycle_max_actions)
         self._session_timeout_seconds = session_timeout_seconds
         self._clock = clock or _SystemClock()
@@ -140,9 +143,31 @@ class AutonomousOrchestrator:
             raise AutonomousCycleNotAllowedError(run_id, "concurrent_cycle")
         self._in_flight.add(run_id)
         try:
+            # Durable cycle lock (M7.4 Phase 4). The process-local _in_flight
+            # fast-fail above catches the same-process double-cycle; the PG
+            # advisory xact lock is transaction-scoped and released at commit,
+            # so two API processes can never interleave scans for one run.
+            if not await self._acquire_cycle_lock(run_id):
+                await self._audit_event(
+                    run, "ai.autonomous.concurrent_cycle_blocked", {}
+                )
+                raise AutonomousCycleNotAllowedError(run_id, "concurrent_cycle")
+            # Settle crash/transport residue BEFORE planning/executing so the
+            # cycle sees clean state (recovery is serialized under the lock).
+            if self._recovery is not None:
+                await self._recovery.reconcile(run_id)
             return await self._cycle_unlocked(run_id)
         finally:
             self._in_flight.discard(run_id)
+
+    async def _acquire_cycle_lock(self, run_id: UUID) -> bool:
+        """Try to take the durable advisory xact lock for this run."""
+        try:
+            return await self._run_repo.try_cycle_lock(run_id)
+        except Exception:  # noqa: BLE001 - fail-closed: if the lock cannot be
+            # verified, never risk a concurrent double-dispatch.
+            log.warning("autonomous_cycle_lock_error run_id=%s", str(run_id))
+            return False
 
     async def _cycle_unlocked(self, run_id: UUID) -> CycleOutcome:
         run = await self._svc.get(run_id)

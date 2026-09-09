@@ -41,7 +41,7 @@ from app.core.metrics import metrics
 from app.domain.entities import AuditLogEntry, Scan, ToolResult
 from app.domain.exceptions import DomainError
 from app.domain.repositories import AuditLogRepository, ScanRepository, ToolResultRepository
-from app.domain.value_objects import ScanStatus
+from app.domain.value_objects import ScanFailureKind, ScanStatus
 from app.infrastructure.execution.authorized_target_runner import AuthorizedTargetRunner
 from app.infrastructure.storage.local_artifact_store import LocalArtifactStore
 from app.plugins.base import CommandRunner
@@ -114,7 +114,12 @@ class ExecutionEngine:
             await self._scope_guard.validate_targets(scan.project_id, scan.target_ids)
         except DomainError as exc:
             log.warning("scan_execution_scope_guard_rejected", reason=str(exc))
-            await self._scans.fail(scan_id, f"Scope Guard rejected at execution time: {exc}", None)
+            await self._scans.fail(
+                scan_id,
+                f"Scope Guard rejected at execution time: {exc}",
+                None,
+                ScanFailureKind.DOMAIN,
+            )
             await self._write_audit(scan, "scan.failed", {"reason": str(exc)})
             return
 
@@ -158,7 +163,12 @@ class ExecutionEngine:
             )
         except Exception as exc:  # noqa: BLE001 - must never leave a scan stuck in `running`
             log.error("scan_execution_unexpected_error", error=str(exc))
-            await self._scans.fail(scan_id, f"Unexpected execution error: {exc}", None)
+            await self._scans.fail(
+                scan_id,
+                f"Unexpected execution error: {exc}",
+                None,
+                ScanFailureKind.TOOL,
+            )
             await self._write_audit(scan, "scan.failed", {"reason": str(exc)})
             return
 
@@ -296,8 +306,26 @@ class ExecutionEngine:
                 {"exit_code": result.exit_code, "duration_seconds": duration_seconds},
             )
         else:
+            # M7.4 Phase 4: classify the failure for autonomous recovery.
+            # ExecutorHttpRunner records "transport" when the plugin never
+            # ran (executor unreachable). Anything else — timed out, non-zero
+            # exit, executor "failed"/"error", or the subprocess fallback
+            # (no metadata) — is TOOL and must never be auto-retried, because
+            # the tool may have done work. Recovery re-validates/fails closed
+            # on this distinction rather than on exit_code alone.
+            metadata = getattr(result, "metadata", None)
+            raw_kind = metadata.get("failure_kind") if isinstance(metadata, dict) else None
+            failure_kind: ScanFailureKind = ScanFailureKind.TOOL
+            if isinstance(raw_kind, str):
+                try:
+                    failure_kind = ScanFailureKind(raw_kind)
+                except ValueError:
+                    failure_kind = ScanFailureKind.TOOL
             await self._scans.fail(
-                scan_id, result.stderr or "Plugin reported failure", result.exit_code
+                scan_id,
+                result.stderr or "Plugin reported failure",
+                result.exit_code,
+                failure_kind,
             )
             metrics.inc_counter("scans_total", tags={"plugin": scan.plugin, "status": "failed"})
             metrics.observe_histogram(

@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession as SqlAsyncSession
 
 from app.domain.entities import Scan
-from app.domain.value_objects import ScanStatus
+from app.domain.value_objects import ScanFailureKind, ScanStatus
 from app.infrastructure.db.models.scan import ScanModel
 
 
@@ -29,6 +29,7 @@ def _scan_to_entity(row: ScanModel) -> Scan:
         artifacts_path=row.artifacts_path,
         exit_code=row.exit_code,
         error_message=row.error_message,
+        failure_kind=ScanFailureKind(row.failure_kind) if row.failure_kind else None,
     )
 
 
@@ -47,6 +48,9 @@ class SqlAlchemyScanRepository:
             status=scan.status.value,
             target_ids=[str(t) for t in scan.target_ids],
             plugin_config=scan.plugin_config,
+            error_message=scan.error_message,
+            completed_at=scan.completed_at,
+            failure_kind=scan.failure_kind.value if scan.failure_kind else None,
         )
         self._session.add(model)
         await self._session.flush()
@@ -92,7 +96,13 @@ class SqlAlchemyScanRepository:
         await self._session.execute(stmt)
         await self._session.flush()
 
-    async def fail(self, scan_id: UUID, error_message: str, exit_code: int | None) -> None:
+    async def fail(
+        self,
+        scan_id: UUID,
+        error_message: str,
+        exit_code: int | None,
+        failure_kind: ScanFailureKind | None = None,
+    ) -> None:
         stmt = (
             update(ScanModel)
             .where(ScanModel.id == scan_id)
@@ -100,6 +110,7 @@ class SqlAlchemyScanRepository:
                 status=ScanStatus.FAILED.value,
                 error_message=error_message,
                 exit_code=exit_code,
+                failure_kind=failure_kind.value if failure_kind else None,
                 completed_at=datetime.now(UTC),
             )
         )
