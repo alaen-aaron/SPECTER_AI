@@ -18,6 +18,8 @@ from app.api.v1.deps import (
     get_current_user,
     get_planner_service,
     require_project_role,
+    require_project_role_for_action,
+    require_project_role_for_run,
 )
 from app.api.v1.schemas.autonomous import (
     AutonomousCycleResponse,
@@ -92,7 +94,7 @@ async def list_autonomous_runs(
 )
 async def get_autonomous_run(
     run_id: UUID,
-    _member: ProjectMember | OrganizationMember = Depends(require_project_role()),
+    _member: ProjectMember | OrganizationMember = Depends(require_project_role_for_run()),
     service: AutonomousService = Depends(get_autonomous_service),
 ) -> AutonomousRunResponse:
     run = await service.get(run_id)
@@ -107,7 +109,7 @@ async def get_autonomous_run(
 async def cancel_autonomous_run(
     run_id: UUID,
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_run(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
 ) -> AutonomousRunResponse:
@@ -123,7 +125,7 @@ async def cancel_autonomous_run(
 async def start_planning(
     run_id: UUID,
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_run(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
 ) -> AutonomousRunResponse:
@@ -139,7 +141,7 @@ async def start_planning(
 async def plan_complete(
     run_id: UUID,
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_run(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
 ) -> AutonomousRunResponse:
@@ -170,7 +172,7 @@ async def plan_complete(
 async def run_cycle(
     run_id: UUID,
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_run(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     orchestrator: AutonomousOrchestrator = Depends(get_autonomous_orchestrator),
 ) -> AutonomousCycleResponse:
@@ -192,7 +194,7 @@ async def approve_run(
     run_id: UUID,
     current_user: User = Depends(get_current_user),
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_run(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
     planner: PlannerService = Depends(get_planner_service),
@@ -203,9 +205,7 @@ async def approve_run(
         if action.planned_action_id is not None:
             # Approval mode == MANUAL; the M7.2 PlannedAction must match so
             # execute_approved() can route the human-approved action later.
-            await planner.approve(
-                action.planned_action_id, approved_by=current_user.id
-            )
+            await planner.approve(action.planned_action_id, approved_by=current_user.id)
     run = await service.approval_granted(run_id)
     return AutonomousRunResponse.model_validate(run)
 
@@ -218,7 +218,7 @@ async def approve_run(
 async def execution_complete(
     run_id: UUID,
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_run(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
 ) -> AutonomousRunResponse:
@@ -235,7 +235,7 @@ async def observation_complete_endpoint(
     run_id: UUID,
     should_continue: bool = Query(default=False),
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_run(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
 ) -> AutonomousRunResponse:
@@ -250,7 +250,7 @@ async def observation_complete_endpoint(
 )
 async def heartbeat(
     run_id: UUID,
-    _member: ProjectMember | OrganizationMember = Depends(require_project_role()),
+    _member: ProjectMember | OrganizationMember = Depends(require_project_role_for_run()),
     service: AutonomousService = Depends(get_autonomous_service),
 ) -> AutonomousRunResponse:
     run = await service.heartbeat(run_id)
@@ -265,7 +265,7 @@ async def heartbeat(
 async def list_actions(
     run_id: UUID,
     status_filter: str | None = Query(default=None, alias="status"),
-    _member: ProjectMember | OrganizationMember = Depends(require_project_role()),
+    _member: ProjectMember | OrganizationMember = Depends(require_project_role_for_run()),
     service: AutonomousService = Depends(get_autonomous_service),
 ) -> list[AutonomousRunActionResponse]:
     actions = await service.list_actions(run_id, status=status_filter)
@@ -281,7 +281,7 @@ async def approve_action_endpoint(
     action_id: UUID,
     current_user: User = Depends(get_current_user),
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_action(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
     planner: PlannerService = Depends(get_planner_service),
@@ -302,7 +302,7 @@ async def reject_action_endpoint(
     current_user: User = Depends(get_current_user),
     reason: str = "",
     _member: ProjectMember | OrganizationMember = Depends(
-        require_project_role(ProjectRole.OWNER, ProjectRole.ADMIN)
+        require_project_role_for_action(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
     planner: PlannerService = Depends(get_planner_service),

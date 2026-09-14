@@ -64,7 +64,12 @@ from app.application.target_service import TargetService
 from app.application.workflow_service import WorkflowService, WorkflowTaskDispatcher
 from app.core.config import Settings, get_settings
 from app.domain.entities import OrganizationMember, ProjectMember, User
-from app.domain.exceptions import InsufficientPermissionError, NotAProjectMemberError
+from app.domain.exceptions import (
+    AutonomousRunNotFoundError,
+    InsufficientPermissionError,
+    NotAProjectMemberError,
+    PlannedActionNotFoundError,
+)
 from app.domain.value_objects import (
     ORGANIZATION_ADMIN_ROLES,
     OrganizationRole,
@@ -764,6 +769,74 @@ def require_project_role_for_target(
     ) -> ProjectMember:
         target = await target_service.get(target_id)
         member = await project_service.require_member(target.project_id, current_user.id)
+        if allowed_roles and member.role not in allowed_roles:
+            raise InsufficientPermissionError(tuple(r.value for r in allowed_roles))
+        return member
+
+    return _checker
+
+
+# --- Autonomous run-scoped authorization (M7.5 Phase 2) ---------------------
+
+
+def require_project_role_for_run(
+    *allowed_roles: ProjectRole,
+) -> Callable[..., Awaitable[ProjectMember]]:
+    """M7.5 Phase 2 — resource-first authorization for AutonomousRun routes.
+
+    Loads the AutonomousRun by ``run_id`` (extracted from the path) and
+    authorizes the caller against the run's *owning project*.  The
+    caller-supplied ``?project_id=`` query parameter is never consulted —
+    the run itself is authoritative.
+
+    Mirrors ``require_project_role`` semantics: only project membership
+    (no org-admin bypass) and the same optional role gate.
+    """
+
+    async def _checker(
+        run_id: UUID,
+        current_user: User = Depends(get_current_user),
+        autonomous_service: AutonomousService = Depends(get_autonomous_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        run = await autonomous_service.get(run_id)
+        member = await project_service.require_member(run.project_id, current_user.id)
+        if allowed_roles and member.role not in allowed_roles:
+            raise InsufficientPermissionError(tuple(r.value for r in allowed_roles))
+        return member
+
+    return _checker
+
+
+def require_project_role_for_action(
+    *allowed_roles: ProjectRole,
+) -> Callable[..., Awaitable[ProjectMember]]:
+    """M7.5 Phase 2 — resource-first authorization for action routes.
+
+    Loads the AutonomousRunAction by ``action_id``, then loads the parent
+    AutonomousRun and verifies ``action.project_id == run.project_id``
+    (defense-in-depth).  Authorizes against the run's project — action
+    authorization is never independent of its parent run.
+    """
+
+    async def _checker(
+        action_id: UUID,
+        current_user: User = Depends(get_current_user),
+        action_repo: SqlAlchemyAutonomousRunActionRepository = Depends(
+            get_autonomous_action_repository
+        ),
+        autonomous_service: AutonomousService = Depends(get_autonomous_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        action = await action_repo.get(action_id)
+        if action is None:
+            raise PlannedActionNotFoundError(action_id)
+        # Defense-in-depth: verify the action's denormalized project_id
+        # matches the parent run's authoritative project_id.
+        run = await autonomous_service.get(action.run_id)
+        if run.project_id != action.project_id:
+            raise AutonomousRunNotFoundError(action_id)
+        member = await project_service.require_member(run.project_id, current_user.id)
         if allowed_roles and member.role not in allowed_roles:
             raise InsufficientPermissionError(tuple(r.value for r in allowed_roles))
         return member
