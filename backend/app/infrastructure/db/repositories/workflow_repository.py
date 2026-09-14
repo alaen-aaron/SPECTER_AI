@@ -5,10 +5,10 @@ repositories (Phase 2/3).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession as SqlAsyncSession
 
 from app.domain.entities import Schedule, Workflow, WorkflowExecution, WorkflowStep
@@ -69,6 +69,23 @@ def _execution_to_entity(row: WorkflowExecutionModel) -> WorkflowExecution:
         started_at=row.started_at,
         completed_at=row.completed_at,
         error_message=row.error_message,
+    )
+
+
+def _schedule_to_entity(row: ScheduleModel) -> Schedule:
+    return Schedule(
+        id=row.id,
+        workflow_id=row.workflow_id,
+        project_id=row.project_id,
+        frequency=ScheduleFrequency(row.frequency),
+        cron_expression=row.cron_expression,
+        is_active=row.is_active,
+        last_run_at=row.last_run_at,
+        next_run_at=row.next_run_at,
+        expires_at=row.expires_at,
+        created_by=row.created_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
@@ -178,9 +195,7 @@ class SqlAlchemyWorkflowStepRepository:
         await self._session.flush()
 
     async def delete_for_workflow(self, workflow_id: UUID) -> None:
-        stmt = delete(WorkflowStepModel).where(
-            WorkflowStepModel.workflow_id == workflow_id
-        )
+        stmt = delete(WorkflowStepModel).where(WorkflowStepModel.workflow_id == workflow_id)
         await self._session.execute(stmt)
         await self._session.flush()
 
@@ -231,9 +246,11 @@ class SqlAlchemyWorkflowExecutionRepository:
             values["started_at"] = datetime.now(UTC)
         elif status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
             values["completed_at"] = datetime.now(UTC)
-        stmt = update(WorkflowExecutionModel).where(
-            WorkflowExecutionModel.id == execution_id
-        ).values(**values)
+        stmt = (
+            update(WorkflowExecutionModel)
+            .where(WorkflowExecutionModel.id == execution_id)
+            .values(**values)
+        )
         await self._session.execute(stmt)
         await self._session.flush()
 
@@ -247,9 +264,11 @@ class SqlAlchemyWorkflowExecutionRepository:
         if row is not None:
             results = dict(row.step_results or {})
             results[step_id] = result
-            stmt = update(WorkflowExecutionModel).where(
-                WorkflowExecutionModel.id == execution_id
-            ).values(step_results=results)
+            stmt = (
+                update(WorkflowExecutionModel)
+                .where(WorkflowExecutionModel.id == execution_id)
+                .values(step_results=results)
+            )
             await self._session.execute(stmt)
             await self._session.flush()
 
@@ -259,7 +278,6 @@ class SqlAlchemyScheduleRepository:
         self._session = session
 
     async def create(self, schedule: Schedule) -> None:
-
         model = ScheduleModel(
             id=schedule.id,
             workflow_id=schedule.workflow_id,
@@ -269,6 +287,7 @@ class SqlAlchemyScheduleRepository:
             is_active=schedule.is_active,
             last_run_at=schedule.last_run_at,
             next_run_at=schedule.next_run_at,
+            expires_at=schedule.expires_at,
             created_by=schedule.created_by,
         )
         self._session.add(model)
@@ -276,20 +295,7 @@ class SqlAlchemyScheduleRepository:
 
     async def get(self, schedule_id: UUID) -> Schedule | None:
         row = await self._session.get(ScheduleModel, schedule_id)
-        if row is None:
-            return None
-        return Schedule(
-            id=row.id,
-            workflow_id=row.workflow_id,
-            project_id=row.project_id,
-            frequency=ScheduleFrequency(row.frequency),
-            cron_expression=row.cron_expression,
-            is_active=row.is_active,
-            last_run_at=row.last_run_at,
-            next_run_at=row.next_run_at,
-            created_by=row.created_by,
-            created_at=row.created_at,
-        )
+        return _schedule_to_entity(row) if row else None
 
     async def list_for_project(self, project_id: UUID) -> list[Schedule]:
         stmt = (
@@ -298,21 +304,7 @@ class SqlAlchemyScheduleRepository:
             .order_by(ScheduleModel.created_at.desc())
         )
         result = await self._session.execute(stmt)
-        schedules: list[Schedule] = []
-        for row in result.scalars().all():
-            schedules.append(Schedule(
-                id=row.id,
-                workflow_id=row.workflow_id,
-                project_id=row.project_id,
-                frequency=ScheduleFrequency(row.frequency),
-                cron_expression=row.cron_expression,
-                is_active=row.is_active,
-                last_run_at=row.last_run_at,
-                next_run_at=row.next_run_at,
-                created_by=row.created_by,
-                created_at=row.created_at,
-            ))
-        return schedules
+        return [_schedule_to_entity(row) for row in result.scalars().all()]
 
     async def list_active(self) -> list[Schedule]:
         stmt = (
@@ -321,45 +313,51 @@ class SqlAlchemyScheduleRepository:
             .order_by(ScheduleModel.next_run_at)
         )
         result = await self._session.execute(stmt)
-        schedules: list[Schedule] = []
-        for row in result.scalars().all():
-            schedules.append(Schedule(
-                id=row.id,
-                workflow_id=row.workflow_id,
-                project_id=row.project_id,
-                frequency=ScheduleFrequency(row.frequency),
-                cron_expression=row.cron_expression,
-                is_active=row.is_active,
-                last_run_at=row.last_run_at,
-                next_run_at=row.next_run_at,
-                created_by=row.created_by,
-                created_at=row.created_at,
-            ))
-        return schedules
+        return [_schedule_to_entity(row) for row in result.scalars().all()]
 
     async def list_due(self, now: datetime) -> list[Schedule]:
         stmt = (
             select(ScheduleModel)
             .where(ScheduleModel.is_active == True)  # noqa: E712
             .where(ScheduleModel.next_run_at <= now)
+            .where(
+                or_(
+                    ScheduleModel.expires_at.is_(None),
+                    ScheduleModel.expires_at > now,
+                )
+            )
             .order_by(ScheduleModel.next_run_at)
         )
         result = await self._session.execute(stmt)
-        schedules: list[Schedule] = []
-        for row in result.scalars().all():
-            schedules.append(Schedule(
-                id=row.id,
-                workflow_id=row.workflow_id,
-                project_id=row.project_id,
-                frequency=ScheduleFrequency(row.frequency),
-                cron_expression=row.cron_expression,
-                is_active=row.is_active,
-                last_run_at=row.last_run_at,
-                next_run_at=row.next_run_at,
-                created_by=row.created_by,
-                created_at=row.created_at,
-            ))
-        return schedules
+        return [_schedule_to_entity(row) for row in result.scalars().all()]
+
+    async def claim_due(self, now: datetime, limit: int = 50) -> list[Schedule]:
+        """M7.5 Phase 1 — durable fire-lock for the scheduler tick.
+
+        `FOR UPDATE SKIP LOCKED` claims due rows inside the caller's
+        transaction: simultaneous beats (multiple workers, duplicate beat
+        processes) see locked rows and skip them, so a schedule occurrence
+        is dispatched by exactly one tick. The claim lives or dies with the
+        transaction — commit advances the schedule to its next run; rollback
+        leaves it due for the next tick, so a failed execution never wedges
+        the schedule and never "consumes" a run that didn't happen.
+        """
+        stmt = (
+            select(ScheduleModel)
+            .where(ScheduleModel.is_active == True)  # noqa: E712
+            .where(ScheduleModel.next_run_at <= now)
+            .where(
+                or_(
+                    ScheduleModel.expires_at.is_(None),
+                    ScheduleModel.expires_at > now,
+                )
+            )
+            .order_by(ScheduleModel.next_run_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        result = await self._session.execute(stmt)
+        return [_schedule_to_entity(row) for row in result.scalars().all()]
 
     async def update(self, schedule: Schedule) -> None:
         stmt = (
@@ -371,6 +369,8 @@ class SqlAlchemyScheduleRepository:
                 is_active=schedule.is_active,
                 last_run_at=schedule.last_run_at,
                 next_run_at=schedule.next_run_at,
+                expires_at=schedule.expires_at,
+                updated_at=datetime.now(UTC),
             )
         )
         await self._session.execute(stmt)

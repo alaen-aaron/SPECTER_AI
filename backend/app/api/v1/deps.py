@@ -402,9 +402,7 @@ def get_evidence_service(
 
 def get_report_service(
     report_repo: SqlAlchemyReportRepository = Depends(get_report_repository),
-    report_version_repo: SqlAlchemyReportVersionRepository = Depends(
-        get_report_version_repository
-    ),
+    report_version_repo: SqlAlchemyReportVersionRepository = Depends(get_report_version_repository),
     finding_repo: SqlAlchemyFindingRepository = Depends(get_finding_repository),
     asset_repo: SqlAlchemyAssetRepository = Depends(get_asset_repository),
     scan_repo: SqlAlchemyScanRepository = Depends(get_scan_repository),
@@ -495,9 +493,7 @@ def get_action_proposal_validator(
     plugin_policy: PluginManager = Depends(get_plugin_manager),
     plugin_lookup: PluginRegistry = Depends(get_plugin_registry),
     target_repo: SqlAlchemyTargetRepository = Depends(get_target_repository),
-    action_repo: SqlAlchemyPlannedActionRepository = Depends(
-        get_planned_action_repository
-    ),
+    action_repo: SqlAlchemyPlannedActionRepository = Depends(get_planned_action_repository),
     settings: Settings = Depends(get_settings),
 ) -> ActionProposalValidator:
     """
@@ -580,17 +576,13 @@ def get_ai_reporter_service(
 
 
 def get_context_memory_service(
-    memory_repo: SqlAlchemyAIContextMemoryRepository = Depends(
-        get_ai_context_memory_repository
-    ),
+    memory_repo: SqlAlchemyAIContextMemoryRepository = Depends(get_ai_context_memory_repository),
 ) -> ContextMemoryService:
     return ContextMemoryService(memory_repo=memory_repo)
 
 
 def get_prompt_library_service(
-    template_repo: SqlAlchemyPromptTemplateRepository = Depends(
-        get_prompt_template_repository
-    ),
+    template_repo: SqlAlchemyPromptTemplateRepository = Depends(get_prompt_template_repository),
 ) -> PromptLibraryService:
     return PromptLibraryService(template_repo=template_repo)
 
@@ -889,6 +881,84 @@ def require_scan_view_permission() -> Callable[..., Awaitable[ProjectMember]]:
     return _checker
 
 
+def require_workflow_execution_permission() -> (
+    Callable[..., Awaitable[ProjectMember | OrganizationMember]]
+):
+    """
+    M7.5 Phase 1 — permission for triggering workflow execution.
+
+    The workflow's owning project is resolved SERVER-SIDE from the
+    `workflow_id` (never from a caller-supplied `?project_id=` query
+    param), then the exact scan-launch rule is applied: only project
+    members whose role does testing work (Owner/Admin/Lead Tester/Tester)
+    plus org Owner/Admin may execute a workflow — because a workflow
+    executes scans. Read-Only and Client Viewer members can view, build,
+    and activate workflows but cannot launch them.
+    """
+
+    async def _checker(
+        workflow_id: UUID,
+        current_user: User = Depends(get_current_user),
+        workflow_service: WorkflowService = Depends(get_workflow_service),
+        project_service: ProjectService = Depends(get_project_service),
+        org_service: OrganizationService = Depends(get_organization_service),
+    ) -> ProjectMember | OrganizationMember:
+        workflow = await workflow_service.get(workflow_id)
+        return await _check_scan_launch_permission(
+            workflow.project_id, current_user, project_service, org_service
+        )
+
+    return _checker
+
+
+def require_workflow_execution_permission_for_execution() -> (
+    Callable[..., Awaitable[ProjectMember | OrganizationMember]]
+):
+    """
+    Execution-control twin of `require_workflow_execution_permission`,
+    for routes keyed by `execution_id` (cancel). Resolves the owning
+    project from the WorkflowExecution row, then applies the same
+    scan-launch rule.
+    """
+
+    async def _checker(
+        execution_id: UUID,
+        current_user: User = Depends(get_current_user),
+        workflow_service: WorkflowService = Depends(get_workflow_service),
+        project_service: ProjectService = Depends(get_project_service),
+        org_service: OrganizationService = Depends(get_organization_service),
+    ) -> ProjectMember | OrganizationMember:
+        execution = await workflow_service.get_execution(execution_id)
+        return await _check_scan_launch_permission(
+            execution.project_id, current_user, project_service, org_service
+        )
+
+    return _checker
+
+
+def require_schedule_permission() -> Callable[..., Awaitable[ProjectMember | OrganizationMember]]:
+    """
+    M7.5 Phase 1 — creating or mutating a schedule is an execution-control
+    action (every fire launches a workflow that runs scans), so it uses the
+    scan-launch rule. The owning project is resolved server-side from the
+    schedule row.
+    """
+
+    async def _checker(
+        schedule_id: UUID,
+        current_user: User = Depends(get_current_user),
+        schedule_service: ScheduleService = Depends(get_schedule_service),
+        project_service: ProjectService = Depends(get_project_service),
+        org_service: OrganizationService = Depends(get_organization_service),
+    ) -> ProjectMember | OrganizationMember:
+        schedule = await schedule_service.get(schedule_id)
+        return await _check_scan_launch_permission(
+            schedule.project_id, current_user, project_service, org_service
+        )
+
+    return _checker
+
+
 def require_project_role_for_asset(
     *allowed_roles: ProjectRole,
 ) -> Callable[..., Awaitable[ProjectMember]]:
@@ -991,9 +1061,7 @@ def require_report_edit_permission() -> (
     return _checker
 
 
-def require_report_version_view_permission() -> (
-    Callable[..., Awaitable[ProjectMember]]
-):
+def require_report_version_view_permission() -> Callable[..., Awaitable[ProjectMember]]:
     """
     Permission dependency for report-version routes keyed by `{version_id}`
     alone (get metadata, download). Resolves the version's owning report
@@ -1019,9 +1087,7 @@ def require_report_version_view_permission() -> (
     return _checker
 
 
-def require_report_version_diff_permission() -> (
-    Callable[..., Awaitable[ProjectMember]]
-):
+def require_report_version_diff_permission() -> Callable[..., Awaitable[ProjectMember]]:
     """
     Permission dependency for the diff route keyed by `{version_id_a}` and
     `{version_id_b}` — resolves the first version's owning project and

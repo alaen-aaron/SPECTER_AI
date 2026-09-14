@@ -491,8 +491,17 @@ class Schedule:
     is_active: bool = True
     last_run_at: datetime | None = None
     next_run_at: datetime | None = None
+
+    # M7.5 Phase 1: hard stop for the schedule. Once the clock passes
+    # `expires_at` the schedule is permanently disabled — a repeated scan
+    # trigger must have a bounded lifetime even if the admin forgets it.
+    expires_at: datetime | None = None
     created_by: UUID | None = None
     created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def is_expired(self, at: datetime) -> bool:
+        return self.expires_at is not None and at > self.expires_at
 
 
 # --- AI Decision Engine (Phase 4, SRS §8) -----------------------------------

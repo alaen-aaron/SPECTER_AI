@@ -300,9 +300,7 @@ class FakeObservationSource:
             "new_facts": 1 if has_new else 0,
         }
 
-    async def ingest(
-        self, run: AutonomousRun
-    ) -> ObservationOutcome:
+    async def ingest(self, run: AutonomousRun) -> ObservationOutcome:
         self.calls.append(run)
         if self.raise_error is not None:
             raise self.raise_error
@@ -515,12 +513,8 @@ class FakeAssetObservationRepository:
             for o in self._observations.values()
         )
 
-    async def list_for_asset(
-        self, asset_id: UUID, limit: int = 100
-    ) -> list[AssetObservation]:
-        found = [
-            o for o in self._observations.values() if o.asset_id == asset_id
-        ]
+    async def list_for_asset(self, asset_id: UUID, limit: int = 100) -> list[AssetObservation]:
+        found = [o for o in self._observations.values() if o.asset_id == asset_id]
         found.sort(key=lambda o: o.observed_at or datetime.min.replace(tzinfo=UTC), reverse=True)
         return found[:limit]
 
@@ -549,20 +543,14 @@ class FakeFindingRepository:
         results = [f for f in self._findings.values() if f.project_id == project_id]
         if severity is not None:
             results = [f for f in results if f.severity == severity]
-        results.sort(
-            key=lambda f: f.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
-        )
+        results.sort(key=lambda f: f.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
         if cursor is not None:
             results = [
-                f
-                for f in results
-                if (f.created_at or datetime.min.replace(tzinfo=UTC)) < cursor
+                f for f in results if (f.created_at or datetime.min.replace(tzinfo=UTC)) < cursor
             ]
         return results[: limit + 1]
 
-    async def get_by_dedup_key(
-        self, project_id: UUID, dedup_key: str
-    ) -> Finding | None:
+    async def get_by_dedup_key(self, project_id: UUID, dedup_key: str) -> Finding | None:
         for finding in self._findings.values():
             if finding.project_id == project_id and finding.dedup_key == dedup_key:
                 return finding
@@ -589,20 +577,15 @@ class FakeEvidenceRepository:
         return self._evidence.get(evidence_id)
 
     async def list_for_finding(self, finding_id: UUID) -> list[Evidence]:
-        return [
-            e for e in self._evidence.values() if e.finding_id == finding_id
-        ]
+        return [e for e in self._evidence.values() if e.finding_id == finding_id]
 
     async def list_for_project(self, project_id: UUID) -> list[Evidence]:
         if self._findings is None:
             return []
         finding_ids = {
-            f.id for f in self._findings._findings.values()
-            if f.project_id == project_id
+            f.id for f in self._findings._findings.values() if f.project_id == project_id
         }
-        return [
-            e for e in self._evidence.values() if e.finding_id in finding_ids
-        ]
+        return [e for e in self._evidence.values() if e.finding_id in finding_ids]
 
 
 class FakeReportRepository:
@@ -816,12 +799,8 @@ class FakeGraphRepository:
         }
 
     async def clear_project(self, project_id: UUID) -> None:
-        self._edges = {
-            eid: e for eid, e in self._edges.items() if e.project_id != project_id
-        }
-        self._nodes = {
-            nid: n for nid, n in self._nodes.items() if n.project_id != project_id
-        }
+        self._edges = {eid: e for eid, e in self._edges.items() if e.project_id != project_id}
+        self._nodes = {nid: n for nid, n in self._nodes.items() if n.project_id != project_id}
 
     async def blast_radius(
         self,
@@ -899,9 +878,7 @@ class FakeWorkflowStepRepository:
         self._steps.pop(step_id, None)
 
     async def delete_for_workflow(self, workflow_id: UUID) -> None:
-        self._steps = {
-            sid: s for sid, s in self._steps.items() if s.workflow_id != workflow_id
-        }
+        self._steps = {sid: s for sid, s in self._steps.items() if s.workflow_id != workflow_id}
 
 
 class FakeWorkflowExecutionRepository:
@@ -951,6 +928,7 @@ class FakeWorkflowExecutionRepository:
 class FakeScheduleRepository:
     def __init__(self) -> None:
         self._schedules: dict[UUID, Schedule] = {}
+        self._claimed: set[UUID] = set()
 
     async def create(self, schedule: Schedule) -> None:
         self._schedules[schedule.id] = schedule
@@ -974,17 +952,66 @@ class FakeScheduleRepository:
     async def list_due(self, now: datetime) -> list[Schedule]:
         return sorted(
             [
-                s for s in self._schedules.values()
-                if s.is_active and s.next_run_at is not None and s.next_run_at <= now
+                s
+                for s in self._schedules.values()
+                if s.is_active
+                and s.next_run_at is not None
+                and s.next_run_at <= now
+                and (s.expires_at is None or s.expires_at > now)
             ],
             key=lambda s: s.next_run_at or datetime.max.replace(tzinfo=UTC),
         )
+
+    async def claim_due(self, now: datetime, limit: int = 50) -> list[Schedule]:
+        due = [
+            s
+            for s in self._schedules.values()
+            if s.is_active
+            and s.next_run_at is not None
+            and s.next_run_at <= now
+            and (s.expires_at is None or s.expires_at > now)
+            and s.id not in self._claimed
+        ]
+        due.sort(key=lambda s: s.next_run_at or datetime.max.replace(tzinfo=UTC))
+        claimed = due[:limit]
+        self._claimed.update(s.id for s in claimed)
+        return claimed
 
     async def update(self, schedule: Schedule) -> None:
         self._schedules[schedule.id] = schedule
 
     async def delete(self, schedule_id: UUID) -> None:
         self._schedules.pop(schedule_id, None)
+
+
+class FakeExecutionEngine:
+    """Stand-in for `ExecutionEngine` used by the M7.5 hardened
+    `WorkflowExecutor`: successfully running a scan simply completes it.
+
+    Supports failure injection for retry tests: set
+    `op_failures[scan_id] = Exception` (or prepend to `failures`) and the
+    engine will raise/leave the scan FAILED the given number of times —
+    injection is CONSUMED per `run` call, so the executor's retry logic
+    gets exercised, then the scan succeeds.
+    """
+
+    def __init__(self, scan_repository: FakeScanRepository) -> None:
+        self._scans = scan_repository
+        self.failures: list[Exception] = []
+        self.op_failures: dict[UUID, list[Exception]] = {}
+        self.calls: list[UUID] = []
+
+    async def run(self, scan_id: UUID) -> None:
+        self.calls.append(scan_id)
+        if self.op_failures.get(scan_id):
+            exc = self.op_failures[scan_id].pop(0)
+            await self._scans.fail(scan_id, str(exc), 1, failure_kind=ScanFailureKind.TRANSPORT)
+            raise exc
+        if self.failures:
+            exc = self.failures.pop(0)
+            await self._scans.fail(scan_id, str(exc), 1, failure_kind=ScanFailureKind.TRANSPORT)
+            raise exc
+        await self._scans.complete(scan_id, 0, None)
 
 
 # --- AI Decision Engine fakes (Phase 4) -------------------------------------
@@ -1008,9 +1035,9 @@ class FakePlannedActionRepository:
         cursor: datetime | None = None,
     ) -> list[object]:
         results = [
-            a for a in self._actions.values()
-            if a.project_id == project_id
-            and (status is None or a.status == status)
+            a
+            for a in self._actions.values()
+            if a.project_id == project_id and (status is None or a.status == status)
         ]
         return sorted(
             results,
@@ -1056,10 +1083,7 @@ class FakePromptTemplateRepository:
         return self._templates.get(template_id)
 
     async def get_active_by_name(self, name: str) -> object | None:
-        candidates = [
-            t for t in self._templates.values()
-            if t.name == name and t.is_active
-        ]
+        candidates = [t for t in self._templates.values() if t.name == name and t.is_active]
         if candidates:
             return max(candidates, key=lambda t: t.version)
         return None
@@ -1091,12 +1115,11 @@ class FakeAIContextMemoryRepository:
             reverse=True,
         )
 
-    async def list_for_project_by_type(
-        self, project_id: UUID, memory_type: str
-    ) -> list[object]:
+    async def list_for_project_by_type(self, project_id: UUID, memory_type: str) -> list[object]:
         return sorted(
             [
-                m for m in self._memories.values()
+                m
+                for m in self._memories.values()
                 if m.project_id == project_id and m.memory_type == memory_type
             ],
             key=lambda m: m.created_at or datetime.min.replace(tzinfo=UTC),
@@ -1132,9 +1155,9 @@ class FakeAutonomousRunRepository:
         cursor: datetime | None = None,
     ) -> list[AutonomousRun]:
         results = [
-            r for r in self._runs.values()
-            if r.project_id == project_id
-            and (status is None or r.status == status)
+            r
+            for r in self._runs.values()
+            if r.project_id == project_id and (status is None or r.status == status)
         ]
         results.sort(
             key=lambda r: r.created_at or datetime.min.replace(tzinfo=UTC),
@@ -1142,8 +1165,7 @@ class FakeAutonomousRunRepository:
         )
         if cursor is not None:
             results = [
-                r for r in results
-                if (r.created_at or datetime.min.replace(tzinfo=UTC)) < cursor
+                r for r in results if (r.created_at or datetime.min.replace(tzinfo=UTC)) < cursor
             ]
         return results[:limit]
 
@@ -1183,9 +1205,7 @@ class FakeAutonomousRunRepository:
             if anchor is not None and anchor < threshold:
                 stale.append(run)
         stale.sort(
-            key=lambda r: r.last_heartbeat_at
-            or r.started_at
-            or datetime.min.replace(tzinfo=UTC)
+            key=lambda r: r.last_heartbeat_at or r.started_at or datetime.min.replace(tzinfo=UTC)
         )
         return stale
 
@@ -1215,7 +1235,8 @@ class FakeAutonomousRunActionRepository:
         status: str | None = None,
     ) -> list[AutonomousRunAction]:
         results = [
-            a for a in self._actions.values()
+            a
+            for a in self._actions.values()
             if a.run_id == run_id and (status is None or a.status == status)
         ]
         results.sort(key=lambda a: (a.cycle, a.created_at or datetime.min.replace(tzinfo=UTC)))
@@ -1386,9 +1407,7 @@ class FakePlannerService:
         self.rejected.append(action_id)
         return action
 
-    async def reapprove(
-        self, action_id: UUID, *, approved_by: UUID | None = None
-    ) -> PlannedAction:
+    async def reapprove(self, action_id: UUID, *, approved_by: UUID | None = None) -> PlannedAction:
         """M7.4 Phase 4 — EXECUTED→APPROVED (transport retry only)."""
         action = self._get(action_id)
         if action.status is not PlannedActionStatus.EXECUTED:
@@ -1412,8 +1431,7 @@ class FakePlannerService:
         return [
             a
             for a in self.planned
-            if a.project_id == project_id
-            and (status is None or a.status == status)
+            if a.project_id == project_id and (status is None or a.status == status)
         ][:limit]
 
     async def execute_approved(

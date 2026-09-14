@@ -66,6 +66,7 @@ from app.domain.exceptions import (
     WorkflowNotExecutableError,
     WorkflowNotFoundError,
     WorkflowStepDependencyError,
+    WorkflowStepTargetError,
 )
 
 _PROBLEM_BASE_URL = "https://specter.ai/errors"
@@ -109,6 +110,7 @@ _EXCEPTION_MAP: dict[type[DomainError], tuple[int, str]] = {
     WorkflowHasCyclesError: (422, "workflow-has-cycles"),
     WorkflowNotExecutableError: (409, "workflow-not-executable"),
     WorkflowStepDependencyError: (422, "workflow-step-dependency-error"),
+    WorkflowStepTargetError: (422, "workflow-step-target-error"),
     WorkflowExecutionNotFoundError: (404, "workflow-execution-not-found"),
     WorkflowExecutionNotCancellableError: (409, "workflow-execution-not-cancellable"),
     ScheduleNotFoundError: (404, "schedule-not-found"),

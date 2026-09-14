@@ -61,9 +61,7 @@ class WorkflowStepModel(Base):
     max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    __table_args__ = (
-        Index("idx_workflow_steps_workflow", "workflow_id"),
-    )
+    __table_args__ = (Index("idx_workflow_steps_workflow", "workflow_id"),)
 
 
 class WorkflowExecutionModel(Base):
@@ -120,10 +118,16 @@ class ScheduleModel(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_run_at: Mapped[datetime | None] = mapped_column(nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # M7.5 Phase 1: hard-stop lifetime for a repeating schedule. When the
+    # clock passes expires_at the schedule is disabled and never fired again.
+    expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
     __table_args__ = (
         Index("idx_schedules_workflow", "workflow_id"),

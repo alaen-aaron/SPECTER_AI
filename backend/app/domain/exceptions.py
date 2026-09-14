@@ -65,9 +65,7 @@ class NotAProjectMemberError(DomainError):
 
 class ProjectMemberAlreadyExistsError(DomainError):
     def __init__(self, project_id: UUID, user_id: UUID) -> None:
-        super().__init__(
-            f"User {user_id} is already a member of project {project_id}"
-        )
+        super().__init__(f"User {user_id} is already a member of project {project_id}")
         self.project_id = project_id
         self.user_id = user_id
 
@@ -262,9 +260,7 @@ class WorkflowNotFoundError(DomainError):
 class WorkflowEmptyError(DomainError):
     def __init__(self, workflow_id: UUID) -> None:
         self.workflow_id = workflow_id
-        super().__init__(
-            f"Cannot activate workflow {workflow_id}: workflow has no steps."
-        )
+        super().__init__(f"Cannot activate workflow {workflow_id}: workflow has no steps.")
 
 
 class WorkflowHasCyclesError(DomainError):
@@ -287,8 +283,25 @@ class WorkflowStepDependencyError(DomainError):
     def __init__(self, step_id: UUID, missing_dep: UUID) -> None:
         self.step_id = step_id
         self.missing_dep = missing_dep
+        super().__init__(f"Step {step_id} depends on unknown step {missing_dep}.")
+
+
+class WorkflowStepTargetError(DomainError):
+    """M7.5 Phase 1 — fail-closed workflow step target resolution.
+
+    A workflow step may only scan a project's REGISTERED, authorization-
+    covered Target rows. If a step's `plugin_config` references no target
+    or references a value that is not a registered Target of the workflow's
+    project, the step is rejected before anything executes. This closes the
+    gap where workflow steps previously embedded raw target strings and
+    bypassed both Scope Guard and the registered-target executor policy.
+    """
+
+    def __init__(self, step_id: UUID, plugin: str, reason: str) -> None:
+        self.step_id = step_id
+        self.plugin = plugin
         super().__init__(
-            f"Step {step_id} depends on unknown step {missing_dep}."
+            f"Workflow step {step_id} (plugin '{plugin}') cannot be executed: " f"{reason}"
         )
 
 
@@ -424,8 +437,7 @@ class AutonomousRunNotCancellableError(DomainError):
         self.run_id = run_id
         self.current_status = current_status
         super().__init__(
-            f"Autonomous run {run_id} cannot be cancelled from status "
-            f"'{current_status}'."
+            f"Autonomous run {run_id} cannot be cancelled from status " f"'{current_status}'."
         )
 
 
@@ -434,8 +446,7 @@ class AutonomousRunInvalidTransitionError(DomainError):
         self.current_status = current_status
         self.requested_status = requested_status
         super().__init__(
-            f"Cannot transition autonomous run from '{current_status}' to "
-            f"'{requested_status}'."
+            f"Cannot transition autonomous run from '{current_status}' to " f"'{requested_status}'."
         )
 
 
@@ -449,9 +460,7 @@ class AutonomousRunBudgetExceededError(DomainError):
 class AutonomousRunActiveExistsError(DomainError):
     def __init__(self, project_id: UUID) -> None:
         self.project_id = project_id
-        super().__init__(
-            f"An active autonomous run already exists for project {project_id}."
-        )
+        super().__init__(f"An active autonomous run already exists for project {project_id}.")
 
 
 class AutonomousActionNotApprovableError(DomainError):
@@ -471,8 +480,7 @@ class AutonomousCycleNotAllowedError(DomainError):
         self.run_id = run_id
         self.current_status = current_status
         super().__init__(
-            f"Autonomous cycle cannot run for run {run_id} from status "
-            f"'{current_status}'."
+            f"Autonomous cycle cannot run for run {run_id} from status " f"'{current_status}'."
         )
 
 
@@ -482,9 +490,7 @@ class AutonomousActionExecutionError(DomainError):
     def __init__(self, run_id: UUID, action_id: UUID, message: str) -> None:
         self.run_id = run_id
         self.action_id = action_id
-        super().__init__(
-            f"Autonomous action {action_id} (run {run_id}) failed: {message}"
-        )
+        super().__init__(f"Autonomous action {action_id} (run {run_id}) failed: {message}")
 
 
 class AutonomousActionNotRetryableError(DomainError):

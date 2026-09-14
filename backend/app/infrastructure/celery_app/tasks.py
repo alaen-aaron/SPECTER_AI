@@ -14,7 +14,11 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
+import structlog
+
 from app.infrastructure.celery_app.app import celery_app
+
+logger = structlog.get_logger(__name__)
 
 
 @celery_app.task(name="specter.ping")
@@ -177,6 +181,8 @@ async def _execute_workflow(execution_id: UUID) -> None:
     from app.application.asset_service import AssetService
     from app.application.correlation_service import CorrelationService
     from app.application.graph_service import GraphService
+    from app.application.scan_service import NullScanTaskDispatcher, ScanService
+    from app.application.scope_guard_service import ScopeGuardService
     from app.application.workflow_executor import WorkflowExecutor
     from app.core.config import get_settings
     from app.infrastructure.db.repositories.asset_observation_repository import (
@@ -185,14 +191,26 @@ async def _execute_workflow(execution_id: UUID) -> None:
     from app.infrastructure.db.repositories.asset_repository import (
         SqlAlchemyAssetRepository,
     )
+    from app.infrastructure.db.repositories.audit_log_repository import (
+        SqlAlchemyAuditLogRepository,
+    )
+    from app.infrastructure.db.repositories.authorization_repository import (
+        SqlAlchemyAuthorizationRecordRepository,
+    )
     from app.infrastructure.db.repositories.finding_repository import (
         SqlAlchemyFindingRepository,
     )
     from app.infrastructure.db.repositories.graph_repository import (
         SqlAlchemyGraphRepository,
     )
+    from app.infrastructure.db.repositories.project_repository import (
+        SqlAlchemyProjectRepository,
+    )
     from app.infrastructure.db.repositories.scan_repository import (
         SqlAlchemyScanRepository,
+    )
+    from app.infrastructure.db.repositories.target_repository import (
+        SqlAlchemyTargetRepository,
     )
     from app.infrastructure.db.repositories.tool_result_repository import (
         SqlAlchemyToolResultRepository,
@@ -201,6 +219,8 @@ async def _execute_workflow(execution_id: UUID) -> None:
         SqlAlchemyWorkflowExecutionRepository,
         SqlAlchemyWorkflowStepRepository,
     )
+    from app.infrastructure.execution.engine import ExecutionEngine
+    from app.infrastructure.storage.local_artifact_store import LocalArtifactStore
     from app.plugins.base import CommandRunner
     from app.plugins.manager import PluginManager
     from app.plugins.normalizer_registry import normalizer_registry
@@ -230,25 +250,70 @@ async def _execute_workflow(execution_id: UUID) -> None:
                 graph_service=graph_service,
                 observation_repository=SqlAlchemyAssetObservationRepository(session),
             )
-            executor = WorkflowExecutor(
-                plugin_manager=PluginManager(registry, runner=runner),
-                normalizer_registry=normalizer_registry,
-                execution_repository=SqlAlchemyWorkflowExecutionRepository(session),
-                step_repository=SqlAlchemyWorkflowStepRepository(session),
-                scan_repository=SqlAlchemyScanRepository(session),
+            target_repo = SqlAlchemyTargetRepository(session)
+            scope_guard = ScopeGuardService(
+                project_repository=SqlAlchemyProjectRepository(session),
+                target_repository=target_repo,
+                authorization_repository=SqlAlchemyAuthorizationRecordRepository(session),
+            )
+            audit_repo = SqlAlchemyAuditLogRepository(session)
+            scan_repo = SqlAlchemyScanRepository(session)
+            plugin_manager = PluginManager(registry, runner=runner)
+
+            async def _registered_target_values(
+                target_ids: list[UUID],
+            ) -> list[str]:
+                """M7.3 Phase 2: registered identities for executor policy."""
+                values: list[str] = []
+                for tid in target_ids:
+                    t = await target_repo.get_by_id(tid)
+                    if t is not None:
+                        values.append(t.value)
+                return values
+
+            # M7.5 Phase 1: workflow steps go through the SAME canonical
+            # path as ordinary scans — ScanService.create (Scope Guard +
+            # plugin-config validation) then the ExecutionEngine (scope
+            # revalidation, M7.1 isolation, ToolResult/correlation/assets/
+            # audit). NullScanTaskDispatcher: the engine runs the scan
+            # IN-PROCESS below, so the create must NOT double-dispatch to
+            # Celery, or a worker would race the same scan.
+            scan_service = ScanService(
+                scan_repository=scan_repo,
+                scope_guard=scope_guard,
+                plugin_manager=plugin_manager,
+                task_dispatcher=NullScanTaskDispatcher(),
+            )
+            execution_engine = ExecutionEngine(
+                scan_repository=scan_repo,
+                scope_guard=scope_guard,
+                plugin_manager=plugin_manager,
+                artifact_store=LocalArtifactStore(settings.SCAN_ARTIFACTS_DIR),
+                audit_log_repository=audit_repo,
                 tool_result_repository=SqlAlchemyToolResultRepository(session),
+                normalizer_registry=normalizer_registry,
+                default_timeout_seconds=settings.SCAN_DEFAULT_TIMEOUT_SECONDS,
                 correlation_service=CorrelationService(
                     finding_repository=SqlAlchemyFindingRepository(session),
                     asset_repository=SqlAlchemyAssetRepository(session),
                     observation_repository=SqlAlchemyAssetObservationRepository(session),
                     graph_service=graph_service,
                 ),
-                default_timeout_seconds=settings.SCAN_DEFAULT_TIMEOUT_SECONDS,
                 asset_service=asset_service,
                 graph_service=graph_service,
+                runner=runner,
+                registered_target_values=_registered_target_values,
+            )
+            workflow_executor = WorkflowExecutor(
+                scan_service=scan_service,
+                execution_engine=execution_engine,
+                target_repository=target_repo,
+                execution_repository=SqlAlchemyWorkflowExecutionRepository(session),
+                step_repository=SqlAlchemyWorkflowStepRepository(session),
+                audit_log_repository=audit_repo,
             )
             try:
-                await executor.execute(execution_id)
+                await workflow_executor.execute(execution_id)
                 await session.commit()
             except Exception:
                 await session.rollback()
@@ -258,16 +323,37 @@ async def _execute_workflow(execution_id: UUID) -> None:
 
 
 async def _tick_schedules() -> None:
-    """Poll due schedules and dispatch workflow executions."""
+    """Poll due schedules and dispatch workflow executions.
+
+    M7.5 Phase 1 — durable fire-lock:
+      * `claim_due` takes `SELECT ... FOR UPDATE SKIP LOCKED` on the due
+        rows, so two beat workers can never double-fire one schedule
+        while the claim transaction is open.
+      * The claim lives and dies with the transaction: commit advances
+        the schedule (next_run_at slid forward / ONCE deactivated), a
+        rollback leaves it due so it is picked up on the next tick
+        (at-least-once, never wedged).
+      * An archived/deleted workflow's schedule is PERMANENTLY disabled
+        instead of re-firing every 30s.
+    """
     from datetime import UTC, datetime
+    from uuid import uuid4
 
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from app.application.schedule_service import ScheduleService
     from app.application.workflow_service import WorkflowService
     from app.core.config import get_settings
+    from app.domain.entities import AuditLogEntry
+    from app.domain.exceptions import (
+        WorkflowNotExecutableError,
+        WorkflowNotFoundError,
+    )
     from app.infrastructure.celery_app.dispatcher import (
         CeleryWorkflowTaskDispatcher,
+    )
+    from app.infrastructure.db.repositories.audit_log_repository import (
+        SqlAlchemyAuditLogRepository,
     )
     from app.infrastructure.db.repositories.workflow_repository import (
         SqlAlchemyScheduleRepository,
@@ -284,30 +370,94 @@ async def _tick_schedules() -> None:
         async with session_factory() as session:
             schedule_repo = SqlAlchemyScheduleRepository(session)
             workflow_repo = SqlAlchemyWorkflowRepository(session)
-            execution_repo = SqlAlchemyWorkflowExecutionRepository(session)
+            audit_repo = SqlAlchemyAuditLogRepository(session)
 
             schedule_service = ScheduleService(schedule_repo, workflow_repo)
             workflow_service = WorkflowService(
                 workflow_repository=workflow_repo,
                 step_repository=SqlAlchemyWorkflowStepRepository(session),
-                execution_repository=execution_repo,
+                execution_repository=SqlAlchemyWorkflowExecutionRepository(session),
                 task_dispatcher=CeleryWorkflowTaskDispatcher(),
             )
 
             now = datetime.now(UTC)
-            due_schedules = await schedule_repo.list_due(now)
+            due_schedules = await schedule_repo.claim_due(now, limit=50)
 
             for schedule in due_schedules:
+                actor = schedule.created_by or schedule.project_id
                 try:
-                    await workflow_service.execute(
+                    execution = await workflow_service.execute(
                         schedule.workflow_id,
-                        schedule.created_by or schedule.project_id,
+                        actor,
                     )
                     await schedule_service.mark_run(schedule.id)
+                    await audit_repo.add(
+                        AuditLogEntry(
+                            id=uuid4(),
+                            organization_id=None,
+                            actor_id=actor,
+                            action="scheduler.schedule_fired",
+                            target_type="schedule",
+                            target_id=schedule.id,
+                            ip_address=None,
+                            created_at=datetime.now(UTC),
+                            after_state={
+                                "workflow_id": str(schedule.workflow_id),
+                                "execution_id": str(execution.id),
+                                "frequency": schedule.frequency.value,
+                            },
+                        )
+                    )
+                    await session.commit()
+                except (WorkflowNotExecutableError, WorkflowNotFoundError) as exc:
+                    # Archived/deleted workflow — never re-fire. Permanently
+                    # disable the schedule and say why.
+                    schedule.is_active = False
+                    schedule.next_run_at = None
+                    schedule.updated_at = now
+                    await schedule_repo.update(schedule)
+                    await audit_repo.add(
+                        AuditLogEntry(
+                            id=uuid4(),
+                            organization_id=None,
+                            actor_id=actor,
+                            action="scheduler.schedule_disabled",
+                            target_type="schedule",
+                            target_id=schedule.id,
+                            ip_address=None,
+                            created_at=datetime.now(UTC),
+                            after_state={
+                                "workflow_id": str(schedule.workflow_id),
+                                "reason": f"{type(exc).__name__}: {exc}",
+                            },
+                        )
+                    )
                     await session.commit()
                 except Exception:
+                    # Unexpected failure — rollback keeps the schedule due so
+                    # the next tick re-fires it. Best-effort audit of the miss.
                     await session.rollback()
-                    continue
+                    try:
+                        await audit_repo.add(
+                            AuditLogEntry(
+                                id=uuid4(),
+                                organization_id=None,
+                                actor_id=actor,
+                                action="scheduler.schedule_fire_failed",
+                                target_type="schedule",
+                                target_id=schedule.id,
+                                ip_address=None,
+                                created_at=datetime.now(UTC),
+                            )
+                        )
+                        await session.commit()
+                    except Exception:  # noqa: BLE001
+                        await session.rollback()
+                    logger.warning(
+                        "schedule_fire_failed",
+                        schedule_id=str(schedule.id),
+                        workflow_id=str(schedule.workflow_id),
+                    )
     finally:
         await engine.dispose()
 

@@ -16,6 +16,7 @@ from app.domain.value_objects import (
 
 # --- Workflow ----------------------------------------------------------------
 
+
 class CreateWorkflowRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255, examples=["Full Recon"])
     description: str | None = Field(default=None, examples=["Subfinder → httpx → nmap → nuclei"])
@@ -46,6 +47,7 @@ class WorkflowListResponse(BaseModel):
 
 
 # --- WorkflowStep ------------------------------------------------------------
+
 
 class CreateWorkflowStepRequest(BaseModel):
     plugin: str = Field(examples=["nmap"])
@@ -93,6 +95,7 @@ class WorkflowStepListResponse(BaseModel):
 
 # --- WorkflowExecution -------------------------------------------------------
 
+
 class ExecuteWorkflowRequest(BaseModel):
     pass
 
@@ -120,10 +123,13 @@ class WorkflowExecutionListResponse(BaseModel):
 
 # --- Schedule ----------------------------------------------------------------
 
+
 class CreateScheduleRequest(BaseModel):
     workflow_id: UUID
     frequency: ScheduleFrequency
     cron_expression: str | None = Field(default=None, max_length=100)
+    # M7.5 Phase 1: optional hard-stop for the schedule's lifetime.
+    expires_at: datetime | None = None
 
 
 class ScheduleResponse(BaseModel):
@@ -137,8 +143,10 @@ class ScheduleResponse(BaseModel):
     is_active: bool
     last_run_at: datetime | None
     next_run_at: datetime | None
+    expires_at: datetime | None
     created_by: UUID | None
     created_at: datetime | None
+    updated_at: datetime | None
 
 
 class ScheduleListResponse(BaseModel):

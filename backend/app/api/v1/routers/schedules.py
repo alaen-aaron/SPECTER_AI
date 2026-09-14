@@ -14,6 +14,8 @@ from app.api.v1.deps import (
     get_current_user,
     get_schedule_service,
     require_project_role,
+    require_scan_launch_permission,
+    require_schedule_permission,
 )
 from app.api.v1.schemas.workflows import (
     CreateScheduleRequest,
@@ -21,7 +23,12 @@ from app.api.v1.schemas.workflows import (
     ScheduleResponse,
 )
 from app.application.schedule_service import ScheduleService
-from app.domain.entities import ProjectMember, Schedule, User
+from app.domain.entities import (
+    OrganizationMember,
+    ProjectMember,
+    Schedule,
+    User,
+)
 
 router = APIRouter(tags=["schedules"])
 
@@ -30,13 +37,13 @@ router = APIRouter(tags=["schedules"])
     "/projects/{project_id}/schedules",
     response_model=ScheduleResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a schedule for a workflow",
+    summary="Create a schedule for a workflow (scan-capable role)",
 )
 async def create_schedule(
     project_id: UUID,
     body: CreateScheduleRequest,
     current_user: User = Depends(get_current_user),
-    _member: ProjectMember = Depends(require_project_role()),
+    _permission: ProjectMember | OrganizationMember = Depends(require_scan_launch_permission()),
     service: ScheduleService = Depends(get_schedule_service),
 ) -> Schedule:
     return await service.create(
@@ -45,6 +52,7 @@ async def create_schedule(
         frequency=body.frequency,
         cron_expression=body.cron_expression,
         created_by=current_user.id,
+        expires_at=body.expires_at,
     )
 
 
@@ -78,11 +86,11 @@ async def get_schedule(
 @router.post(
     "/schedules/{schedule_id}/pause",
     response_model=ScheduleResponse,
-    summary="Pause a schedule",
+    summary="Pause a schedule (scan-capable role)",
 )
 async def pause_schedule(
     schedule_id: UUID,
-    _member: ProjectMember = Depends(require_project_role()),
+    _permission: ProjectMember | OrganizationMember = Depends(require_schedule_permission()),
     service: ScheduleService = Depends(get_schedule_service),
 ) -> Schedule:
     return await service.pause(schedule_id)
@@ -91,11 +99,11 @@ async def pause_schedule(
 @router.post(
     "/schedules/{schedule_id}/resume",
     response_model=ScheduleResponse,
-    summary="Resume a paused schedule",
+    summary="Resume a paused schedule (scan-capable role)",
 )
 async def resume_schedule(
     schedule_id: UUID,
-    _member: ProjectMember = Depends(require_project_role()),
+    _permission: ProjectMember | OrganizationMember = Depends(require_schedule_permission()),
     service: ScheduleService = Depends(get_schedule_service),
 ) -> Schedule:
     return await service.resume(schedule_id)
@@ -105,11 +113,11 @@ async def resume_schedule(
     "/schedules/{schedule_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
-    summary="Delete a schedule",
+    summary="Delete a schedule (scan-capable role)",
 )
 async def delete_schedule(
     schedule_id: UUID,
-    _member: ProjectMember = Depends(require_project_role()),
+    _permission: ProjectMember | OrganizationMember = Depends(require_schedule_permission()),
     service: ScheduleService = Depends(get_schedule_service),
 ) -> None:
     await service.delete(schedule_id)

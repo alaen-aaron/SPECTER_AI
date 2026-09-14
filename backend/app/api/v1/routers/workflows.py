@@ -15,6 +15,8 @@ from app.api.v1.deps import (
     get_current_user,
     get_workflow_service,
     require_project_role,
+    require_workflow_execution_permission,
+    require_workflow_execution_permission_for_execution,
 )
 from app.api.v1.schemas.workflows import (
     CreateWorkflowRequest,
@@ -30,6 +32,7 @@ from app.api.v1.schemas.workflows import (
 )
 from app.application.workflow_service import WorkflowService
 from app.domain.entities import (
+    OrganizationMember,
     ProjectMember,
     User,
     Workflow,
@@ -41,6 +44,7 @@ router = APIRouter(tags=["workflows"])
 
 
 # --- Workflow CRUD -----------------------------------------------------------
+
 
 @router.post(
     "/projects/{project_id}/workflows",
@@ -150,6 +154,7 @@ async def archive_workflow(
 
 # --- Workflow Steps ----------------------------------------------------------
 
+
 @router.post(
     "/workflows/{workflow_id}/steps",
     response_model=WorkflowStepResponse,
@@ -229,16 +234,19 @@ async def delete_step(
 
 # --- Workflow Execution ------------------------------------------------------
 
+
 @router.post(
     "/workflows/{workflow_id}/execute",
     response_model=WorkflowExecutionResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Execute a workflow (must be active, DAG validated)",
+    summary="Execute a workflow (must be active, DAG validated, scan-capable role)",
 )
 async def execute_workflow(
     workflow_id: UUID,
     current_user: User = Depends(get_current_user),
-    _member: ProjectMember = Depends(require_project_role()),
+    _permission: ProjectMember | OrganizationMember = Depends(
+        require_workflow_execution_permission()
+    ),
     service: WorkflowService = Depends(get_workflow_service),
 ) -> WorkflowExecution:
     return await service.execute(workflow_id, current_user.id)
@@ -278,7 +286,9 @@ async def get_execution(
 )
 async def cancel_execution(
     execution_id: UUID,
-    _member: ProjectMember = Depends(require_project_role()),
+    _permission: ProjectMember | OrganizationMember = Depends(
+        require_workflow_execution_permission_for_execution()
+    ),
     service: WorkflowService = Depends(get_workflow_service),
 ) -> WorkflowExecution:
     return await service.cancel_execution(execution_id)
