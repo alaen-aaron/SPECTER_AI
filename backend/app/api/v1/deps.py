@@ -1032,6 +1032,35 @@ def require_schedule_permission() -> Callable[..., Awaitable[ProjectMember | Org
     return _checker
 
 
+def require_project_role_for_schedule(
+    *allowed_roles: ProjectRole,
+) -> Callable[..., Awaitable[ProjectMember]]:
+    """M7.5 Phase 3 — resource-first authorization for Schedule read/mutation.
+
+    Loads the Schedule by ``schedule_id`` (extracted from the path) and
+    authorizes the caller against the schedule's owning project. The
+    caller-supplied ``?project_id=`` query parameter is never consulted —
+    the schedule resource is authoritative.
+
+    Mirrors ``require_project_role`` semantics: only project membership
+    (no org-admin bypass) and the same optional role gate.
+    """
+
+    async def _checker(
+        schedule_id: UUID,
+        current_user: User = Depends(get_current_user),
+        schedule_service: ScheduleService = Depends(get_schedule_service),
+        project_service: ProjectService = Depends(get_project_service),
+    ) -> ProjectMember:
+        schedule = await schedule_service.get(schedule_id)
+        member = await project_service.require_member(schedule.project_id, current_user.id)
+        if allowed_roles and member.role not in allowed_roles:
+            raise InsufficientPermissionError(tuple(r.value for r in allowed_roles))
+        return member
+
+    return _checker
+
+
 def require_project_role_for_asset(
     *allowed_roles: ProjectRole,
 ) -> Callable[..., Awaitable[ProjectMember]]:

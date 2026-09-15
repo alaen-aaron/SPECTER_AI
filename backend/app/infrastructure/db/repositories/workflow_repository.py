@@ -11,8 +11,20 @@ from uuid import UUID
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession as SqlAsyncSession
 
-from app.domain.entities import Schedule, Workflow, WorkflowExecution, WorkflowStep
-from app.domain.value_objects import ScanStatus, ScheduleFrequency, WorkflowStatus, WorkflowStepType
+from app.domain.entities import (
+    CampaignScheduleConfig,
+    Schedule,
+    Workflow,
+    WorkflowExecution,
+    WorkflowStep,
+)
+from app.domain.value_objects import (
+    ScanStatus,
+    ScheduleFrequency,
+    ScheduleKind,
+    WorkflowStatus,
+    WorkflowStepType,
+)
 from app.infrastructure.db.models.workflow import (
     ScheduleModel,
     WorkflowExecutionModel,
@@ -75,8 +87,9 @@ def _execution_to_entity(row: WorkflowExecutionModel) -> WorkflowExecution:
 def _schedule_to_entity(row: ScheduleModel) -> Schedule:
     return Schedule(
         id=row.id,
-        workflow_id=row.workflow_id,
         project_id=row.project_id,
+        workflow_id=row.workflow_id,
+        kind=ScheduleKind(row.kind),
         frequency=ScheduleFrequency(row.frequency),
         cron_expression=row.cron_expression,
         is_active=row.is_active,
@@ -86,6 +99,11 @@ def _schedule_to_entity(row: ScheduleModel) -> Schedule:
         created_by=row.created_by,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        campaign_config=(
+            CampaignScheduleConfig.from_dict(dict(row.campaign_config))
+            if row.campaign_config is not None
+            else None
+        ),
     )
 
 
@@ -283,12 +301,16 @@ class SqlAlchemyScheduleRepository:
             workflow_id=schedule.workflow_id,
             project_id=schedule.project_id,
             frequency=schedule.frequency.value,
+            kind=schedule.kind.value,
             cron_expression=schedule.cron_expression,
             is_active=schedule.is_active,
             last_run_at=schedule.last_run_at,
             next_run_at=schedule.next_run_at,
             expires_at=schedule.expires_at,
             created_by=schedule.created_by,
+            campaign_config=(
+                schedule.campaign_config.to_dict() if schedule.campaign_config is not None else None
+            ),
         )
         self._session.add(model)
         await self._session.flush()
@@ -365,11 +387,17 @@ class SqlAlchemyScheduleRepository:
             .where(ScheduleModel.id == schedule.id)
             .values(
                 frequency=schedule.frequency.value,
+                kind=schedule.kind.value,
                 cron_expression=schedule.cron_expression,
                 is_active=schedule.is_active,
                 last_run_at=schedule.last_run_at,
                 next_run_at=schedule.next_run_at,
                 expires_at=schedule.expires_at,
+                campaign_config=(
+                    schedule.campaign_config.to_dict()
+                    if schedule.campaign_config is not None
+                    else None
+                ),
                 updated_at=datetime.now(UTC),
             )
         )

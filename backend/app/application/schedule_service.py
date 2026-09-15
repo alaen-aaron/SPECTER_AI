@@ -25,14 +25,14 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from app.domain.cron import InvalidCronExpressionError, next_run, parse_cron_expression
-from app.domain.entities import Schedule
+from app.domain.entities import CampaignScheduleConfig, Schedule
 from app.domain.exceptions import (
     InvalidScheduleConfigError,
     ScheduleNotFoundError,
     WorkflowNotFoundError,
 )
 from app.domain.repositories import ScheduleRepository, WorkflowRepository
-from app.domain.value_objects import ScheduleFrequency
+from app.domain.value_objects import ScheduleFrequency, ScheduleKind
 
 # Default cron per frequency, used only when the caller supplies neither a
 # frequency default, so every recurring schedule has REAL cron semantics.
@@ -57,26 +57,51 @@ class ScheduleService:
 
     async def create(
         self,
-        workflow_id: UUID,
+        workflow_id: UUID | None,
         project_id: UUID,
         frequency: ScheduleFrequency,
         cron_expression: str | None = None,
         created_by: UUID | None = None,
         *,
+        kind: ScheduleKind = ScheduleKind.WORKFLOW,
+        campaign: CampaignScheduleConfig | None = None,
         expires_at: datetime | None = None,
     ) -> Schedule:
-        workflow = await self._workflows.get(workflow_id)
-        if workflow is None:
-            raise WorkflowNotFoundError(workflow_id)
-
         now = datetime.now(UTC)
+
+        if kind is ScheduleKind.CAMPAIGN:
+            # A campaign trigger needs the objective/budget payload and a human
+            # creator to act as the AutonomousRun's initiator. The workflow_id
+            # column is deliberately NULL for this kind.
+            if workflow_id is not None:
+                raise InvalidScheduleConfigError("A campaign schedule cannot reference a workflow.")
+            if campaign is None:
+                raise InvalidScheduleConfigError(
+                    "A campaign schedule requires campaign configuration."
+                )
+            self._validate_campaign(campaign)
+            if created_by is None:
+                raise InvalidScheduleConfigError(
+                    "A campaign schedule requires a created_by user to act as "
+                    "the campaign initiator."
+                )
+        else:
+            if workflow_id is None:
+                raise InvalidScheduleConfigError(
+                    "A workflow schedule requires a workflow_id."
+                )
+            workflow = await self._workflows.get(workflow_id)
+            if workflow is None:
+                raise WorkflowNotFoundError(workflow_id)
+
         cron_expr = self._resolve_cron(frequency, cron_expression)
         next_run_at = self._compute_next_run(now, frequency, cron_expr)
 
         schedule = Schedule(
             id=uuid4(),
-            workflow_id=workflow_id,
             project_id=project_id,
+            workflow_id=workflow_id if kind is ScheduleKind.WORKFLOW else None,
+            kind=kind,
             frequency=frequency,
             cron_expression=cron_expr,
             is_active=True,
@@ -85,6 +110,7 @@ class ScheduleService:
             created_by=created_by,
             created_at=now,
             updated_at=now,
+            campaign_config=campaign if kind is ScheduleKind.CAMPAIGN else None,
         )
         self._enforce_expiry(schedule, now)
         await self._schedules.create(schedule)
@@ -150,6 +176,23 @@ class ScheduleService:
         await self._schedules.update(schedule)
 
     # --- internals ----------------------------------------------------------
+
+    def _validate_campaign(self, campaign: CampaignScheduleConfig) -> None:
+        """Bounds a campaign schedule to what an interactive campaign allows.
+
+        Mirrors `CreateAutonomousRunRequest` (1<=max_actions<=50,
+        60<=max_runtime_seconds<=7200) so a scheduled campaign can never
+        request more autonomy than the interactive entry point permits.
+        """
+        if not 1 <= campaign.max_actions <= 50:
+            raise InvalidScheduleConfigError(
+                f"campaign max_actions must be between 1 and 50 (got {campaign.max_actions})"
+            )
+        if not 60 <= campaign.max_runtime_seconds <= 7200:
+            raise InvalidScheduleConfigError(
+                "campaign max_runtime_seconds must be between 60 and 7200 "
+                f"(got {campaign.max_runtime_seconds})"
+            )
 
     def _resolve_cron(
         self,

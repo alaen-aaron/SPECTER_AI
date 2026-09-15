@@ -238,6 +238,20 @@ class ScheduleFrequency(str, Enum):
     WEEKLY = "weekly"
 
 
+class ScheduleKind(str, Enum):
+    """What a schedule triggers when it fires (M7.5 Phase 3).
+
+    ``WORKFLOW`` runs an existing Workflow (topic + workflow lives in
+    ``schedules.workflow_id``). ``CAMPAIGN`` creates an AutonomousRun
+    whose objective/budget live in ``schedules.campaign_config`` and whose
+    ``workflow_id`` column is NULL — the two kinds are mutually exclusive,
+    enforced at creation time by ``ScheduleService``.
+    """
+
+    WORKFLOW = "workflow"
+    CAMPAIGN = "campaign"
+
+
 class ScheduleStatus(str, Enum):
     """Schedule lifecycle state."""
 

@@ -14,6 +14,7 @@ from app.api.v1.deps import (
     get_current_user,
     get_schedule_service,
     require_project_role,
+    require_project_role_for_schedule,
     require_scan_launch_permission,
     require_schedule_permission,
 )
@@ -24,11 +25,13 @@ from app.api.v1.schemas.workflows import (
 )
 from app.application.schedule_service import ScheduleService
 from app.domain.entities import (
+    CampaignScheduleConfig,
     OrganizationMember,
     ProjectMember,
     Schedule,
     User,
 )
+from app.domain.value_objects import ScheduleKind
 
 router = APIRouter(tags=["schedules"])
 
@@ -46,12 +49,21 @@ async def create_schedule(
     _permission: ProjectMember | OrganizationMember = Depends(require_scan_launch_permission()),
     service: ScheduleService = Depends(get_schedule_service),
 ) -> Schedule:
+    campaign_config: CampaignScheduleConfig | None = None
+    if body.kind is ScheduleKind.CAMPAIGN and body.campaign is not None:
+        campaign_config = CampaignScheduleConfig(
+            objective=body.campaign.objective,
+            max_actions=body.campaign.max_actions,
+            max_runtime_seconds=body.campaign.max_runtime_seconds,
+        )
     return await service.create(
         workflow_id=body.workflow_id,
         project_id=project_id,
         frequency=body.frequency,
         cron_expression=body.cron_expression,
         created_by=current_user.id,
+        kind=body.kind,
+        campaign=campaign_config,
         expires_at=body.expires_at,
     )
 
@@ -67,7 +79,7 @@ async def list_schedules(
     service: ScheduleService = Depends(get_schedule_service),
 ) -> ScheduleListResponse:
     schedules = await service.list_for_project(project_id)
-    return ScheduleListResponse(items=schedules)
+    return ScheduleListResponse(items=[ScheduleResponse.model_validate(s) for s in schedules])
 
 
 @router.get(
@@ -77,10 +89,11 @@ async def list_schedules(
 )
 async def get_schedule(
     schedule_id: UUID,
-    _member: ProjectMember = Depends(require_project_role()),
+    _member: ProjectMember = Depends(require_project_role_for_schedule()),
     service: ScheduleService = Depends(get_schedule_service),
-) -> Schedule:
-    return await service.get(schedule_id)
+) -> ScheduleResponse:
+    schedule = await service.get(schedule_id)
+    return ScheduleResponse.model_validate(schedule)
 
 
 @router.post(

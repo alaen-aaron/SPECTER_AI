@@ -12,6 +12,7 @@ there is no request-scoped session to reuse here.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from uuid import UUID
 
 import structlog
@@ -341,7 +342,10 @@ async def _tick_schedules() -> None:
 
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from app.application.autonomous_service import AutonomousService
+    from app.application.campaign_scheduler_service import CampaignSchedulerService
     from app.application.schedule_service import ScheduleService
+    from app.application.scope_guard_service import ScopeGuardService
     from app.application.workflow_service import WorkflowService
     from app.core.config import get_settings
     from app.domain.entities import AuditLogEntry
@@ -349,11 +353,27 @@ async def _tick_schedules() -> None:
         WorkflowNotExecutableError,
         WorkflowNotFoundError,
     )
+    from app.domain.value_objects import ScheduleKind
     from app.infrastructure.celery_app.dispatcher import (
         CeleryWorkflowTaskDispatcher,
     )
     from app.infrastructure.db.repositories.audit_log_repository import (
         SqlAlchemyAuditLogRepository,
+    )
+    from app.infrastructure.db.repositories.authorization_repository import (
+        SqlAlchemyAuthorizationRecordRepository,
+    )
+    from app.infrastructure.db.repositories.autonomous_run_action_repository import (
+        SqlAlchemyAutonomousRunActionRepository,
+    )
+    from app.infrastructure.db.repositories.autonomous_run_repository import (
+        SqlAlchemyAutonomousRunRepository,
+    )
+    from app.infrastructure.db.repositories.project_repository import (
+        SqlAlchemyProjectRepository,
+    )
+    from app.infrastructure.db.repositories.target_repository import (
+        SqlAlchemyTargetRepository,
     )
     from app.infrastructure.db.repositories.workflow_repository import (
         SqlAlchemyScheduleRepository,
@@ -371,6 +391,7 @@ async def _tick_schedules() -> None:
             schedule_repo = SqlAlchemyScheduleRepository(session)
             workflow_repo = SqlAlchemyWorkflowRepository(session)
             audit_repo = SqlAlchemyAuditLogRepository(session)
+            run_repo = SqlAlchemyAutonomousRunRepository(session)
 
             schedule_service = ScheduleService(schedule_repo, workflow_repo)
             workflow_service = WorkflowService(
@@ -379,13 +400,37 @@ async def _tick_schedules() -> None:
                 execution_repository=SqlAlchemyWorkflowExecutionRepository(session),
                 task_dispatcher=CeleryWorkflowTaskDispatcher(),
             )
+            campaign_scheduler = CampaignSchedulerService(
+                schedule_service=schedule_service,
+                autonomous_service=AutonomousService(
+                    run_repo=run_repo,
+                    action_repo=SqlAlchemyAutonomousRunActionRepository(session),
+                ),
+                scope_guard=ScopeGuardService(
+                    project_repository=SqlAlchemyProjectRepository(session),
+                    target_repository=SqlAlchemyTargetRepository(session),
+                    authorization_repository=SqlAlchemyAuthorizationRecordRepository(session),
+                ),
+                audit_repository=audit_repo,
+            )
 
             now = datetime.now(UTC)
             due_schedules = await schedule_repo.claim_due(now, limit=50)
 
             for schedule in due_schedules:
                 actor = schedule.created_by or schedule.project_id
+                if schedule.kind is ScheduleKind.CAMPAIGN:
+                    await _fire_campaign_schedule(
+                        session,
+                        campaign_scheduler,
+                        audit_repo,
+                        schedule,
+                        actor,
+                        now,
+                    )
+                    continue
                 try:
+                    assert schedule.workflow_id is not None
                     execution = await workflow_service.execute(
                         schedule.workflow_id,
                         actor,
@@ -458,6 +503,235 @@ async def _tick_schedules() -> None:
                         schedule_id=str(schedule.id),
                         workflow_id=str(schedule.workflow_id),
                     )
+    finally:
+        await engine.dispose()
+
+
+async def _fire_campaign_schedule(
+    session: object,
+    campaign_scheduler: Any,
+    audit_repo: object,
+    schedule: object,
+    actor: UUID,
+    now: Any,
+) -> None:
+    """Fire one claimed CAMPAIGN schedule and advance it (single transaction).
+
+    ``campaign_scheduler.fire`` already consumed the occurrence inside the
+    beat loop's transaction: the commit below makes the AutonomousRun (or
+    the audited skip/rejection) durable together with the schedule advance.
+    On FIRED we queue the M7.4 first cycle under the run's OWN id, so a
+    re-delivered kick is a no-op at the broker and doubly-guarded by a
+    status check in the task body.
+    """
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from app.application.campaign_scheduler_service import CampaignFireOutcome
+    from app.domain.entities import AuditLogEntry
+
+    try:
+        result = await campaign_scheduler.fire(schedule)
+        await session.commit()  # type: ignore[attr-defined]
+        if result.outcome is CampaignFireOutcome.FIRED and result.run_id is not None:
+            campaign_advance_task.apply_async(
+                args=[str(result.run_id)],
+                task_id=str(result.run_id),
+            )
+    except Exception:  # noqa: BLE001
+        # Unexpected failure — the claim + fire die with this transaction,
+        # leaving the schedule due for the next tick (at-least-once, never
+        # wedged). Best-effort audit of the miss.
+        await session.rollback()  # type: ignore[attr-defined]
+        try:
+            await audit_repo.add(  # type: ignore[attr-defined]
+                AuditLogEntry(
+                    id=uuid4(),
+                    organization_id=None,
+                    actor_id=actor,
+                    action="scheduler.campaign_fire_failed",
+                    target_type="schedule",
+                    target_id=schedule.id,  # type: ignore[attr-defined]
+                    ip_address=None,
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            await session.rollback()  # type: ignore[attr-defined]
+        logger.warning(
+            "campaign_fire_failed",
+            schedule_id=str(schedule.id),  # type: ignore[attr-defined]
+            project_id=str(schedule.project_id),  # type: ignore[attr-defined]
+        )
+
+
+@celery_app.task(name="specter.campaign_advance")
+def campaign_advance_task(run_id: str) -> None:
+    """M7.5 Phase 3 — drive the FIRST M7.4 cycle of a scheduled campaign.
+
+    Delivered after the scheduler's fire transaction commits, using the
+    run's own id as the Celery task id, so a duplicated kick can never run
+    twice; the body additionally guards on run status. Everything after the
+    first cycle belongs to the (untouched) M7.4 subsystem — orchestrator →
+    planner → approval gate → executor → observation, entered through the
+    exact same ``orchestrator.cycle`` entry point the interactive flow uses.
+    """
+    asyncio.run(_campaign_advance(UUID(run_id)))
+
+
+async def _campaign_advance(run_id: UUID) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import app.plugins.builtin  # noqa: F401
+    from app.application.action_classifier import ActionClassificationPolicy
+    from app.application.action_validator import ActionProposalValidator
+    from app.application.autonomous_observation import ObservationIngestService
+    from app.application.autonomous_orchestrator import AutonomousOrchestrator
+    from app.application.autonomous_recovery import AutonomousRecoveryService
+    from app.application.autonomous_service import AutonomousService
+    from app.application.planner_service import PlannerService
+    from app.application.scan_service import ScanService
+    from app.application.scope_guard_service import ScopeGuardService
+    from app.core.config import get_settings
+    from app.domain.exceptions import AutonomousRunNotFoundError
+    from app.domain.value_objects import AutonomousRunStatus
+    from app.infrastructure.celery_app.dispatch_after_commit import (
+        drain_pending_dispatches,
+    )
+    from app.infrastructure.celery_app.dispatcher import (
+        AfterCommitScanTaskDispatcher,
+        CeleryScanTaskDispatcher,
+    )
+    from app.infrastructure.db.repositories.ai_context_memory_repository import (
+        SqlAlchemyAIContextMemoryRepository,
+    )
+    from app.infrastructure.db.repositories.asset_repository import (
+        SqlAlchemyAssetRepository,
+    )
+    from app.infrastructure.db.repositories.audit_log_repository import (
+        SqlAlchemyAuditLogRepository,
+    )
+    from app.infrastructure.db.repositories.authorization_repository import (
+        SqlAlchemyAuthorizationRecordRepository,
+    )
+    from app.infrastructure.db.repositories.autonomous_run_action_repository import (
+        SqlAlchemyAutonomousRunActionRepository,
+    )
+    from app.infrastructure.db.repositories.autonomous_run_repository import (
+        SqlAlchemyAutonomousRunRepository,
+    )
+    from app.infrastructure.db.repositories.finding_repository import (
+        SqlAlchemyFindingRepository,
+    )
+    from app.infrastructure.db.repositories.planned_action_repository import (
+        SqlAlchemyPlannedActionRepository,
+    )
+    from app.infrastructure.db.repositories.project_repository import (
+        SqlAlchemyProjectRepository,
+    )
+    from app.infrastructure.db.repositories.scan_repository import (
+        SqlAlchemyScanRepository,
+    )
+    from app.infrastructure.db.repositories.target_repository import (
+        SqlAlchemyTargetRepository,
+    )
+    from app.infrastructure.db.repositories.tool_result_repository import (
+        SqlAlchemyToolResultRepository,
+    )
+    from app.plugins.manager import PluginManager
+    from app.plugins.registry import registry as plugin_registry
+
+    settings = get_settings()
+    engine = create_async_engine(str(settings.DATABASE_URL))
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            run_repo = SqlAlchemyAutonomousRunRepository(session)
+            action_repo = SqlAlchemyAutonomousRunActionRepository(session)
+            scan_repo = SqlAlchemyScanRepository(session)
+            planned_action_repo = SqlAlchemyPlannedActionRepository(session)
+            finding_repo = SqlAlchemyFindingRepository(session)
+            asset_repo = SqlAlchemyAssetRepository(session)
+            context_memory_repo = SqlAlchemyAIContextMemoryRepository(session)
+            project_repo = SqlAlchemyProjectRepository(session)
+            target_repo = SqlAlchemyTargetRepository(session)
+            auth_repo = SqlAlchemyAuthorizationRecordRepository(session)
+            tool_result_repo = SqlAlchemyToolResultRepository(session)
+            audit_repo = SqlAlchemyAuditLogRepository(session)
+
+            # Do nothing if the run is no longer CREATED — the interactive
+            # flow (or a recovery pass) already drove it. The idempotent guard
+            # makes a re-delivered campaign kick a strict no-op.
+            autonomous_service = AutonomousService(
+                run_repo=run_repo,
+                action_repo=action_repo,
+            )
+            try:
+                run = await autonomous_service.get(run_id)
+            except AutonomousRunNotFoundError:
+                return
+            if run.status is not AutonomousRunStatus.CREATED:
+                return
+
+            scope_guard = ScopeGuardService(project_repo, target_repo, auth_repo)
+            plugin_policy = PluginManager(plugin_registry)
+            validator = ActionProposalValidator(
+                policy_validator=plugin_policy,
+                plugin_lookup=plugin_registry,
+                target_repository=target_repo,
+                action_repository=planned_action_repo,
+                scope_guard=scope_guard,
+                executor_enabled=settings.EXECUTOR_ENABLED,
+                executor_image=settings.EXECUTOR_IMAGE,
+            )
+            planner = PlannerService(
+                planned_action_repo=planned_action_repo,
+                finding_repo=finding_repo,
+                asset_repo=asset_repo,
+                context_memory_repo=context_memory_repo,
+                project_repo=project_repo,
+                audit_repo=audit_repo,
+            )
+            planner.set_validator(validator)
+
+            scan_service = ScanService(
+                scan_repo,
+                scope_guard,
+                plugin_policy,
+                AfterCommitScanTaskDispatcher(inner=CeleryScanTaskDispatcher()),
+            )
+            recovery = AutonomousRecoveryService(
+                autonomous_service=autonomous_service,
+                planner=planner,
+                launcher=scan_service.create,
+                scan_repository=scan_repo,
+                audit_repository=audit_repo,
+                max_retries_per_action=settings.AUTONOMOUS_MAX_RETRIES_PER_ACTION,
+            )
+            observation = ObservationIngestService(
+                action_repository=action_repo,
+                scan_repository=scan_repo,
+                tool_result_repository=tool_result_repo,
+                asset_repository=asset_repo,
+                finding_repository=finding_repo,
+                target_repository=target_repo,
+            )
+            orchestrator = AutonomousOrchestrator(
+                autonomous_service=autonomous_service,
+                planner=planner,
+                launcher=scan_service.create,
+                run_repository=run_repo,
+                classification=ActionClassificationPolicy(),
+                audit_repository=audit_repo,
+                observation=observation,
+                recovery=recovery,
+            )
+
+            await orchestrator.cycle(run_id)
+            await session.commit()
+            drain_pending_dispatches()
     finally:
         await engine.dispose()
 

@@ -103,10 +103,12 @@ class ScheduleModel(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    workflow_id: Mapped[uuid.UUID] = mapped_column(
+    # M7.5 Phase 3: a CAMPAIGN schedule has NULL workflow_id (the trigger
+    # creates an AutonomousRun instead of a WorkflowExecution).
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("workflows.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     project_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -114,6 +116,9 @@ class ScheduleModel(Base):
         nullable=False,
     )
     frequency: Mapped[str] = mapped_column(String(20), nullable=False, default="once")
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="workflow", server_default="workflow"
+    )
     cron_expression: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_run_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -128,6 +133,9 @@ class ScheduleModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # M7.5 Phase 3: campaign-only configuration (objective / budget) for
+    # CAMPAIGN-kind schedules. NULL for WORKFLOW-kind schedules.
+    campaign_config: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         Index("idx_schedules_workflow", "workflow_id"),

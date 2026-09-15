@@ -39,6 +39,7 @@ from app.domain.value_objects import (
     ScanFailureKind,
     ScanStatus,
     ScheduleFrequency,
+    ScheduleKind,
     Severity,
     TargetType,
     WorkflowStatus,
@@ -479,14 +480,53 @@ class WorkflowExecution:
         return self.status in SCAN_CANCELLABLE_STATUSES
 
 
+@dataclass(frozen=True, slots=True)
+class CampaignScheduleConfig:
+    """Frozen, validated definition of a CAMPAIGN schedule's autonomous run.
+
+    Mirrors the interactive `CreateAutonomousRunRequest` bounds so a
+    scheduled campaign can never exceed what an interactive one may
+    request: 1..50 actions, 60..7200 seconds runtime. Fields are validated
+    at schedule-creation time by `ScheduleService`; the object is stored
+    as JSONB on the schedule row and deserialized back into this value
+    object at fire time (malformed stored rows are a rejection, never a
+    crash).
+    """
+
+    objective: str = ""
+    max_actions: int = 20
+    max_runtime_seconds: int = 1800
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "objective": self.objective,
+            "max_actions": self.max_actions,
+            "max_runtime_seconds": self.max_runtime_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> CampaignScheduleConfig:
+        return cls(
+            objective=str(data.get("objective") or ""),
+            max_actions=int(str(data.get("max_actions", 20))),
+            max_runtime_seconds=int(str(data.get("max_runtime_seconds", 1800))),
+        )
+
+
 @dataclass(slots=True)
 class Schedule:
-    """A recurring or one-shot trigger for a Workflow (Celery Beat)."""
+    """A recurring or one-shot trigger (Celery Beat).
+
+    M7.5 Phase 3 — a schedule triggers either a Workflow execution
+    (``kind == WORKFLOW``, ``workflow_id`` set) or an autonomous campaign
+    (``kind == CAMPAIGN``, ``workflow_id`` NULL, ``campaign_config`` set).
+    """
 
     id: UUID
-    workflow_id: UUID
     project_id: UUID
-    frequency: ScheduleFrequency
+    workflow_id: UUID | None = None
+    kind: ScheduleKind = ScheduleKind.WORKFLOW
+    frequency: ScheduleFrequency = ScheduleFrequency.ONCE
     cron_expression: str | None = None
     is_active: bool = True
     last_run_at: datetime | None = None
@@ -499,6 +539,9 @@ class Schedule:
     created_by: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    # M7.5 Phase 3: campaign-only configuration (None for workflow kind).
+    campaign_config: CampaignScheduleConfig | None = None
 
     def is_expired(self, at: datetime) -> bool:
         return self.expires_at is not None and at > self.expires_at

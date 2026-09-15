@@ -6,11 +6,12 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.value_objects import (
     ScanStatus,
     ScheduleFrequency,
+    ScheduleKind,
     WorkflowStatus,
 )
 
@@ -124,10 +125,30 @@ class WorkflowExecutionListResponse(BaseModel):
 # --- Schedule ----------------------------------------------------------------
 
 
+class CampaignScheduleConfigRequest(BaseModel):
+    """Mirrors the interactive `CreateAutonomousRunRequest` bounds so a
+    scheduled campaign can never request more autonomy than an interactive
+    one allows."""
+
+    objective: str = Field(default="", max_length=10_000)
+    max_actions: int = Field(default=20, ge=1, le=50)
+    max_runtime_seconds: int = Field(default=1800, ge=60, le=7200)
+
+
 class CreateScheduleRequest(BaseModel):
-    workflow_id: UUID
+    """Create a schedule for a workflow (default) or an autonomous campaign.
+
+    For workflow schedules ``workflow_id`` is required; for campaign
+    schedules ``kind`` must be ``campaign`` and a ``campaign`` payload
+    must be supplied while ``workflow_id`` is omitted (the two kinds are
+    mutually exclusive, enforced at creation time by `ScheduleService`).
+    """
+
+    workflow_id: UUID | None = None
     frequency: ScheduleFrequency
     cron_expression: str | None = Field(default=None, max_length=100)
+    kind: ScheduleKind = ScheduleKind.WORKFLOW
+    campaign: CampaignScheduleConfigRequest | None = None
     # M7.5 Phase 1: optional hard-stop for the schedule's lifetime.
     expires_at: datetime | None = None
 
@@ -135,9 +156,32 @@ class CreateScheduleRequest(BaseModel):
 class ScheduleResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, frozen=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_campaign_config(cls, data: object) -> object:
+        cc = (
+            data.get("campaign_config")
+            if isinstance(data, dict)
+            else getattr(data, "campaign_config", None)
+        )
+        if cc is not None and hasattr(cc, "to_dict"):
+            if isinstance(data, dict):
+                data["campaign_config"] = cc.to_dict()
+                return data
+            dc_fields = getattr(data, "__dataclass_fields__", None)
+            if dc_fields is not None:
+                snapshot = {name: getattr(data, name) for name in dc_fields}
+                snapshot["campaign_config"] = cc.to_dict()
+                return snapshot
+            snapshot = data.__dict__.copy() if hasattr(data, "__dict__") else {}
+            snapshot["campaign_config"] = cc.to_dict()
+            return snapshot
+        return data
+
     id: UUID
-    workflow_id: UUID
+    workflow_id: UUID | None
     project_id: UUID
+    kind: ScheduleKind
     frequency: ScheduleFrequency
     cron_expression: str | None
     is_active: bool
@@ -147,6 +191,7 @@ class ScheduleResponse(BaseModel):
     created_by: UUID | None
     created_at: datetime | None
     updated_at: datetime | None
+    campaign_config: dict[str, Any] | None = None
 
 
 class ScheduleListResponse(BaseModel):
