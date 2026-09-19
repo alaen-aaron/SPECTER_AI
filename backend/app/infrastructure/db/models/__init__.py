@@ -18,9 +18,10 @@ from app.infrastructure.db.models.ai_engine import (
 )
 from app.infrastructure.db.models.asset import AssetModel
 from app.infrastructure.db.models.asset_observation import AssetObservationModel
-from app.infrastructure.db.models.autonomous import AutonomousRunActionModel, AutonomousRunModel
 from app.infrastructure.db.models.audit_log import AuditLogModel
 from app.infrastructure.db.models.authorization import AuthorizationRecordModel
+from app.infrastructure.db.models.autonomous import AutonomousRunActionModel, AutonomousRunModel
+from app.infrastructure.db.models.event_outbox import EventOutboxModel
 from app.infrastructure.db.models.evidence import EvidenceModel
 from app.infrastructure.db.models.finding import FindingModel, finding_tool_results
 from app.infrastructure.db.models.graph import GraphEdgeModel, GraphNodeModel
@@ -51,6 +52,7 @@ __all__ = [
     "AuditLogModel",
     "AuthorizationRecordModel",
     "EvidenceModel",
+    "EventOutboxModel",
     "PlannedActionModel",
     "PromptTemplateModel",
     "RiskScoreModel",

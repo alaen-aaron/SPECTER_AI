@@ -52,6 +52,7 @@ from app.application.graph_service import GraphService
 from app.application.historical_intelligence_service import HistoricalIntelligenceService
 from app.application.impact_analysis_service import ImpactAnalysisService
 from app.application.organization_service import OrganizationService
+from app.application.outbox_service import OutboxService
 from app.application.planner_service import PlannerService
 from app.application.project_service import ProjectService
 from app.application.prompt_library_service import PromptLibraryService
@@ -93,6 +94,9 @@ from app.infrastructure.db.repositories.autonomous_run_action_repository import 
 )
 from app.infrastructure.db.repositories.autonomous_run_repository import (
     SqlAlchemyAutonomousRunRepository,
+)
+from app.infrastructure.db.repositories.event_outbox_repository import (
+    SqlAlchemyOutboxEventRepository,
 )
 from app.infrastructure.db.repositories.evidence_repository import (
     SqlAlchemyEvidenceRepository,
@@ -258,6 +262,18 @@ def get_schedule_repository(
     session: AsyncSession = Depends(get_db_session),
 ) -> SqlAlchemyScheduleRepository:
     return SqlAlchemyScheduleRepository(session)
+
+
+def get_outbox_event_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> SqlAlchemyOutboxEventRepository:
+    return SqlAlchemyOutboxEventRepository(session)
+
+
+def get_outbox_service(
+    repo: SqlAlchemyOutboxEventRepository = Depends(get_outbox_event_repository),
+) -> OutboxService:
+    return OutboxService(repo)
 
 
 # --- Tier 2: application services --------------------------------------------

@@ -7,7 +7,7 @@ by entities, repository interfaces, and application services alike.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import Enum, StrEnum
 
 
 class OrganizationRole(str, Enum):
@@ -382,3 +382,19 @@ class ApprovalMode(str, Enum):
 
     MANUAL = "manual"  # Explicit human approval via the API
     AUTO_POLICY = "auto_policy"  # Granted by bounded-run policy, attributed to initiator
+
+
+class OutboxEventType(StrEnum):
+    """Canonical, versioned campaign lifecycle event types (M7.5 Phase 4-A).
+
+    A deliberately minimal, stable namespace: Phase 4-A stores these
+    events durably but delivers nothing. The dotted string values are the
+    external contract a future relay/consumer will see, so they are never
+    changed for an existing event — a breaking change ships a new value
+    and a schema_version bump instead.
+    """
+
+    CAMPAIGN_RUN_STARTED = "campaign.run.started"
+    CAMPAIGN_RUN_COMPLETED = "campaign.run.completed"
+    CAMPAIGN_RUN_FAILED = "campaign.run.failed"
+    CAMPAIGN_RUN_CANCELLED = "campaign.run.cancelled"

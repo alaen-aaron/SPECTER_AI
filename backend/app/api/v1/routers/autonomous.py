@@ -16,7 +16,9 @@ from app.api.v1.deps import (
     get_autonomous_orchestrator,
     get_autonomous_service,
     get_current_user,
+    get_outbox_service,
     get_planner_service,
+    get_project_service,
     require_project_role,
     require_project_role_for_action,
     require_project_role_for_run,
@@ -30,7 +32,9 @@ from app.api.v1.schemas.autonomous import (
 )
 from app.application.autonomous_orchestrator import AutonomousOrchestrator
 from app.application.autonomous_service import AutonomousService
+from app.application.outbox_service import OutboxService
 from app.application.planner_service import PlannerService
+from app.application.project_service import ProjectService
 from app.domain.entities import OrganizationMember, ProjectMember, User
 from app.domain.value_objects import ProjectRole
 
@@ -112,8 +116,18 @@ async def cancel_autonomous_run(
         require_project_role_for_run(ProjectRole.OWNER, ProjectRole.ADMIN)
     ),
     service: AutonomousService = Depends(get_autonomous_service),
+    outbox_service: OutboxService = Depends(get_outbox_service),
+    project_service: ProjectService = Depends(get_project_service),
 ) -> AutonomousRunResponse:
     run = await service.cancel(run_id)
+    # M7.5 Phase 4-A: record the terminal transition durably in the SAME
+    # request transaction (get_db_session commits after this handler, so
+    # the CANCELLED run and its event commit — or roll back — together).
+    project = await project_service.get(run.project_id)
+    await outbox_service.record_campaign_run_cancelled(
+        run=run,
+        organization_id=project.organization_id,
+    )
     return AutonomousRunResponse.model_validate(run)
 
 

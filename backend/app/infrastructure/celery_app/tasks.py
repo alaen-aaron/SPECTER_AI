@@ -344,6 +344,7 @@ async def _tick_schedules() -> None:
 
     from app.application.autonomous_service import AutonomousService
     from app.application.campaign_scheduler_service import CampaignSchedulerService
+    from app.application.outbox_service import OutboxService
     from app.application.schedule_service import ScheduleService
     from app.application.scope_guard_service import ScopeGuardService
     from app.application.workflow_service import WorkflowService
@@ -369,6 +370,9 @@ async def _tick_schedules() -> None:
     from app.infrastructure.db.repositories.autonomous_run_repository import (
         SqlAlchemyAutonomousRunRepository,
     )
+    from app.infrastructure.db.repositories.event_outbox_repository import (
+        SqlAlchemyOutboxEventRepository,
+    )
     from app.infrastructure.db.repositories.project_repository import (
         SqlAlchemyProjectRepository,
     )
@@ -392,6 +396,7 @@ async def _tick_schedules() -> None:
             workflow_repo = SqlAlchemyWorkflowRepository(session)
             audit_repo = SqlAlchemyAuditLogRepository(session)
             run_repo = SqlAlchemyAutonomousRunRepository(session)
+            project_repo = SqlAlchemyProjectRepository(session)
 
             schedule_service = ScheduleService(schedule_repo, workflow_repo)
             workflow_service = WorkflowService(
@@ -407,12 +412,13 @@ async def _tick_schedules() -> None:
                     action_repo=SqlAlchemyAutonomousRunActionRepository(session),
                 ),
                 scope_guard=ScopeGuardService(
-                    project_repository=SqlAlchemyProjectRepository(session),
+                    project_repository=project_repo,
                     target_repository=SqlAlchemyTargetRepository(session),
                     authorization_repository=SqlAlchemyAuthorizationRecordRepository(session),
                 ),
                 audit_repository=audit_repo,
             )
+            outbox_service = OutboxService(SqlAlchemyOutboxEventRepository(session))
 
             now = datetime.now(UTC)
             due_schedules = await schedule_repo.claim_due(now, limit=50)
@@ -424,6 +430,8 @@ async def _tick_schedules() -> None:
                         session,
                         campaign_scheduler,
                         audit_repo,
+                        outbox_service,
+                        project_repo,
                         schedule,
                         actor,
                         now,
@@ -511,6 +519,8 @@ async def _fire_campaign_schedule(
     session: object,
     campaign_scheduler: Any,
     audit_repo: object,
+    outbox_service: object,
+    project_repo: object,
     schedule: object,
     actor: UUID,
     now: Any,
@@ -520,9 +530,11 @@ async def _fire_campaign_schedule(
     ``campaign_scheduler.fire`` already consumed the occurrence inside the
     beat loop's transaction: the commit below makes the AutonomousRun (or
     the audited skip/rejection) durable together with the schedule advance.
-    On FIRED we queue the M7.4 first cycle under the run's OWN id, so a
-    re-delivered kick is a no-op at the broker and doubly-guarded by a
-    status check in the task body.
+    On FIRED we also record ``campaign.run.started`` in the SAME
+    transaction — a committed fire is a committed started-event, an aborted
+    fire leaves no event. On FIRED we queue the M7.4 first cycle under the
+    run's OWN id, so a re-delivered kick is a no-op at the broker and
+    doubly-guarded by a status check in the task body.
     """
     from datetime import UTC, datetime
     from uuid import uuid4
@@ -532,6 +544,22 @@ async def _fire_campaign_schedule(
 
     try:
         result = await campaign_scheduler.fire(schedule)
+        if result.outcome is CampaignFireOutcome.FIRED and result.run_id is not None:
+            project_entity = await project_repo.get_by_id(  # type: ignore[attr-defined]
+                schedule.project_id  # type: ignore[attr-defined]
+            )
+            await outbox_service.record_campaign_run_started(  # type: ignore[attr-defined]
+                run_id=result.run_id,
+                project_id=schedule.project_id,  # type: ignore[attr-defined]
+                organization_id=(
+                    project_entity.organization_id if project_entity is not None else None
+                ),
+                schedule_id=schedule.id,  # type: ignore[attr-defined]
+                objective=schedule.campaign_config.objective,  # type: ignore[attr-defined]
+                max_actions=schedule.campaign_config.max_actions,  # type: ignore[attr-defined]
+                max_runtime_seconds=schedule.campaign_config.max_runtime_seconds,  # type: ignore[attr-defined]
+                initiated_by=schedule.created_by,  # type: ignore[attr-defined]
+            )
         await session.commit()  # type: ignore[attr-defined]
         if result.outcome is CampaignFireOutcome.FIRED and result.run_id is not None:
             campaign_advance_task.apply_async(
@@ -590,6 +618,7 @@ async def _campaign_advance(run_id: UUID) -> None:
     from app.application.autonomous_orchestrator import AutonomousOrchestrator
     from app.application.autonomous_recovery import AutonomousRecoveryService
     from app.application.autonomous_service import AutonomousService
+    from app.application.outbox_service import OutboxService
     from app.application.planner_service import PlannerService
     from app.application.scan_service import ScanService
     from app.application.scope_guard_service import ScopeGuardService
@@ -620,6 +649,9 @@ async def _campaign_advance(run_id: UUID) -> None:
     )
     from app.infrastructure.db.repositories.autonomous_run_repository import (
         SqlAlchemyAutonomousRunRepository,
+    )
+    from app.infrastructure.db.repositories.event_outbox_repository import (
+        SqlAlchemyOutboxEventRepository,
     )
     from app.infrastructure.db.repositories.finding_repository import (
         SqlAlchemyFindingRepository,
@@ -728,8 +760,29 @@ async def _campaign_advance(run_id: UUID) -> None:
                 observation=observation,
                 recovery=recovery,
             )
+            outbox_service = OutboxService(SqlAlchemyOutboxEventRepository(session))
 
-            await orchestrator.cycle(run_id)
+            outcome = await orchestrator.cycle(run_id)
+            # M7.5 Phase 4-A: mirror the post-cycle TERMINAL transition with a
+            # durable event in this same transaction (rollback ⇒ no event).
+            # CANCELLED is never emitted here — it is owned exclusively by the
+            # cancel endpoint, so a single run can never emit it twice.
+            if outcome.run.status is AutonomousRunStatus.COMPLETED:
+                project_entity = await project_repo.get_by_id(outcome.run.project_id)
+                await outbox_service.record_campaign_run_completed(
+                    run=outcome.run,
+                    organization_id=(
+                        project_entity.organization_id if project_entity is not None else None
+                    ),
+                )
+            elif outcome.run.status is AutonomousRunStatus.FAILED:
+                project_entity = await project_repo.get_by_id(outcome.run.project_id)
+                await outbox_service.record_campaign_run_failed(
+                    run=outcome.run,
+                    organization_id=(
+                        project_entity.organization_id if project_entity is not None else None
+                    ),
+                )
             await session.commit()
             drain_pending_dispatches()
     finally:

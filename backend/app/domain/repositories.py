@@ -34,6 +34,7 @@ from app.domain.entities import (
     Organization,
     OrganizationInvitation,
     OrganizationMember,
+    OutboxEvent,
     PlannedAction,
     Project,
     ProjectMember,
@@ -433,3 +434,16 @@ class AutonomousRunActionRepository(Protocol):
     ) -> list[AutonomousRunAction]: ...
     async def update(self, action: AutonomousRunAction) -> None: ...
     async def get_last_action_fingerprint(self, run_id: UUID) -> str | None: ...
+
+
+class OutboxEventRepository(Protocol):
+    """Durable transactional outbox writes (M7.5 Phase 4-A).
+
+    ``add`` must NEVER commit or roll back: the caller owns the
+    transaction so the event commits atomically with the domain state
+    change it describes (rollback of the domain change ⇒ no event,
+    commit ⇒ event exists). ``add`` flushes only, exactly like the
+    ``AuditLogRepository`` contract this mirrors.
+    """
+
+    async def add(self, event: OutboxEvent) -> None: ...

@@ -731,3 +731,34 @@ class AutonomousRunAction:
     # retried after a retryable (TRANSPORT) failure. Never exceeds the
     # run's max_retries_per_action budget (default 1).
     retry_count: int = 0
+
+
+# --- Transactional outbox (M7.5 Phase 4-A) ----------------------------------
+
+
+@dataclass(slots=True)
+class OutboxEvent:
+    """A durable, immutable lifecycle event (M7.5 Phase 4-A).
+
+    Written inside the SAME transaction as the domain state change it
+    describes, so the event and the change commit (or roll back) together.
+    Observation-only: the outbox is never an alternate execution path, and
+    Phase 4-A performs no delivery — delivery is a later phase that will
+    read these rows.
+
+    ``payload`` is always produced by an explicit, whitelisted builder
+    (``application/event_payloads.py``) — never an ORM/domain object dump —
+    so credentials, secrets, and internal configuration can never leak
+    into an event.
+    """
+
+    id: UUID
+    event_type: str
+    schema_version: int
+    occurred_at: datetime
+    payload: dict[str, object]
+    organization_id: UUID | None = None
+    project_id: UUID | None = None
+    schedule_id: UUID | None = None
+    autonomous_run_id: UUID | None = None
+    created_at: datetime | None = None
