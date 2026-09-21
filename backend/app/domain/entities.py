@@ -743,8 +743,10 @@ class OutboxEvent:
     Written inside the SAME transaction as the domain state change it
     describes, so the event and the change commit (or roll back) together.
     Observation-only: the outbox is never an alternate execution path, and
-    Phase 4-A performs no delivery — delivery is a later phase that will
-    read these rows.
+    Phase 4-A performs no delivery. Phase 4-B1 adds server-defaulted
+    claim/lease fields so the delivery machinery can select and transition
+    rows without the producers ever setting them (and without producer
+    changes).
 
     ``payload`` is always produced by an explicit, whitelisted builder
     (``application/event_payloads.py``) — never an ORM/domain object dump —
@@ -762,3 +764,18 @@ class OutboxEvent:
     schedule_id: UUID | None = None
     autonomous_run_id: UUID | None = None
     created_at: datetime | None = None
+
+    # --- M7.5 Phase 4-B1: delivery/claim fields ---------------------------
+    # All server-defaulted at the DB layer (see EventOutboxModel): producers
+    # NEVER set these, so existing producers need no changes. `available_after`
+    # and `status`/`attempts`/`max_attempts` exist from insert time; the rest
+    # are set by the delivery machinery as rows are claimed and settled.
+    scan_id: UUID | None = None
+    specversion: str = "1.0"
+    available_after: datetime | None = None
+    status: str = "pending"
+    attempts: int = 0
+    max_attempts: int = 10
+    last_error: str | None = None
+    next_retry_at: datetime | None = None
+    delivered_at: datetime | None = None

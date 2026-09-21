@@ -15,7 +15,7 @@ from `infrastructure/`.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -437,13 +437,36 @@ class AutonomousRunActionRepository(Protocol):
 
 
 class OutboxEventRepository(Protocol):
-    """Durable transactional outbox writes (M7.5 Phase 4-A).
+    """Durable transactional outbox writes and delivery claims (M7.5
+    Phase 4-A + 4-B1).
 
     ``add`` must NEVER commit or roll back: the caller owns the
     transaction so the event commits atomically with the domain state
     change it describes (rollback of the domain change ⇒ no event,
     commit ⇒ event exists). ``add`` flushes only, exactly like the
     ``AuditLogRepository`` contract this mirrors.
+
+    The Phase 4-B1 delivery operations (``claim_next_batch``,
+    ``requeue_expired``, ``mark_delivered``, ``mark_failed``) are claim
+    and settlement primitives only: they flush and return, and NEVER
+    commit. The caller owns the transaction and must commit immediately
+    after claiming so the ``delivering`` status (which grants ownership
+    of the row to the claiming worker) becomes durable before any other
+    worker can observe it.
     """
 
     async def add(self, event: OutboxEvent) -> None: ...
+    async def claim_next_batch(
+        self,
+        now: datetime,
+        limit: int = 50,
+        lease: timedelta | None = None,
+    ) -> list[OutboxEvent]: ...
+    async def requeue_expired(self, now: datetime) -> list[OutboxEvent]: ...
+    async def mark_delivered(self, event_id: UUID) -> None: ...
+    async def mark_failed(
+        self,
+        event_id: UUID,
+        error: str,
+        retry_at: datetime | None,
+    ) -> None: ...

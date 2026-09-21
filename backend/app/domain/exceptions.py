@@ -511,3 +511,30 @@ class AutonomousActionNotRetryableError(DomainError):
             f"Autonomous action {action_id} cannot be retried from status "
             f"'{current_status}': {reason}"
         )
+
+
+class OutboxTransitionError(DomainError):
+    """An outbox event rejected an illegal claim/settlement transition
+    (M7.5 Phase 4-B1).
+
+    Raised when a delivery operation targets a row whose current status
+    does not permit the requested transition — e.g. marking a row
+    delivered that is not ``delivering`` (another worker already claimed
+    it), or claiming a row the SQL predicate already excludes. The
+    row's on-write status may win a race, so callers must treat this as
+    the optimistic outcome and not retry blindly.
+    """
+
+    def __init__(
+        self,
+        event_id: UUID,
+        current_status: str,
+        operation: str,
+    ) -> None:
+        self.event_id = event_id
+        self.current_status = current_status
+        self.operation = operation
+        super().__init__(
+            f"Outbox event {event_id} cannot be '{operation}' from status "
+            f"'{current_status}'"
+        )
