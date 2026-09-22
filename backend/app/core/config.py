@@ -110,6 +110,16 @@ class Settings(BaseSettings):
     AUTONOMOUS_MAX_RETRIES_PER_ACTION: int = Field(default=1)
     AUTONOMOUS_STALLED_THRESHOLD_SECONDS: int = Field(default=300)
 
+    # --- Event outbox relay (M7.5 Phase 4-B2) ---------------------------------
+    # Gates the `specter.outbox_relay` beat task. When false (default) the task
+    # no-ops so an operator must explicitly opt a deployment in. The relay
+    # claims a batch of pending outbox events and "delivers" them via the
+    # injected delivery callable (dry-run in 4-B2; real HTTP delivery lands in
+    # 4-B4). Batch size caps both the claim and how many events are touched
+    # per beat tick.
+    OUTBOX_RELAY_ENABLED: bool = Field(default=False)
+    OUTBOX_RELAY_BATCH_LIMIT: int = Field(default=50)
+
     @property
     def is_local(self) -> bool:
         return self.APP_ENV == AppEnvironment.LOCAL

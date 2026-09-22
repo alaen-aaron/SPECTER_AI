@@ -12,11 +12,34 @@ wiring works end-to-end.
 
 from __future__ import annotations
 
+from typing import Any
+
 from celery import Celery
 
 from app.core.config import get_settings
 
 settings = get_settings()
+
+_beat_schedule: dict[str, dict[str, Any]] = {
+    "tick-schedules": {
+        "task": "specter.tick_schedules",
+        "schedule": 30.0,  # every 30 seconds
+    },
+    "recover-autonomous-runs": {
+        "task": "specter.recover_autonomous_runs",
+        "schedule": 60.0,  # every 60 seconds
+    },
+}
+
+if settings.OUTBOX_RELAY_ENABLED:
+    # M7.5 Phase 4-B2 (§13-e): the outbox relay beat entry is compiled in
+    # only when the operator opts in via OUTBOX_RELAY_ENABLED. The write
+    # path (outbox_service) never depends on this flag; gating here keeps
+    # an opted-out deployment from ever running the relay.
+    _beat_schedule["outbox-relay"] = {
+        "task": "specter.outbox_relay",
+        "schedule": 30.0,  # every 30 seconds
+    }
 
 celery_app = Celery(
     "specter_ai",
@@ -32,14 +55,5 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    beat_schedule={
-        "tick-schedules": {
-            "task": "specter.tick_schedules",
-            "schedule": 30.0,  # every 30 seconds
-        },
-        "recover-autonomous-runs": {
-            "task": "specter.recover_autonomous_runs",
-            "schedule": 60.0,  # every 60 seconds
-        },
-    },
+    beat_schedule=_beat_schedule,
 )

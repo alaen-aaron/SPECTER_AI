@@ -969,3 +969,41 @@ async def _recover_stale_autonomous_runs() -> None:
                     continue
     finally:
         await engine.dispose()
+
+
+@celery_app.task(name="specter.outbox_relay")
+def outbox_relay_task() -> None:
+    """M7.5 Phase 4-B2 — outbox relay (Celery Beat, §13-e).
+    
+    Called every 30 seconds by the ``outbox-relay`` beat entry, which is
+    only compiled into the schedule when ``OUTBOX_RELAY_ENABLED`` is set
+    (see ``celery_app/app.py``). The task itself is harmless to invoke
+    at any time: it runs one pass of the §13 claim loop and is safe when
+    the relay is off (an empty loop is a no-op).
+    """
+    asyncio.run(_run_outbox_relay())
+
+
+async def _run_outbox_relay() -> None:
+    # Local-import discipline as with the other async task bodies: the
+    # Celery app imports this module at process start, but the DB/API
+    # stack is only loaded once a task actually runs.
+    from datetime import UTC, datetime
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.core.config import get_settings
+    from app.infrastructure.event.relay import run_outbox_relay
+
+    settings = get_settings()
+    engine = create_async_engine(str(settings.DATABASE_URL))
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    try:
+        await run_outbox_relay(
+            session_factory=session_factory,
+            now=datetime.now(UTC),
+            limit=settings.OUTBOX_RELAY_BATCH_LIMIT,
+        )
+    finally:
+        await engine.dispose()
